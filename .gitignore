@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+
+# User-generated runtime data (DB, downloads, logs)
+backend/data/novel_downloader.db
+backend/data/novel_downloader.db-*
+backend/data/downloads/
+backend/data/logs/
+
+# But keep the schema file tracked
+!backend/data/database_schema.sql
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (fallback; frontend/.gitignore also covers these)
+node_modules/
