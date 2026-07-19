@@ -6,6 +6,7 @@ export const bookStatusColors = {
   completed_with_errors: 'bg-orange-100 text-orange-800 border-l-4 border-orange-400',
   failed: 'bg-red-100 text-red-800 border-l-4 border-red-400',
   cancelled: 'bg-gray-100 text-gray-800 border-l-4 border-gray-400',
+  paused: 'bg-amber-100 text-amber-800 border-l-4 border-amber-400',
 };
 
 export const chapterStatusColors = {

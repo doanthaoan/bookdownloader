@@ -83,10 +83,11 @@ async def get_chapters(book_id: int):
     return chapters
 
 @router.post("/{book_id}/download")
-async def download_book_task(book_id: int, background_tasks: BackgroundTasks):
+async def download_book_task(book_id: int, background_tasks: BackgroundTasks, max_chapters: int = None):
     """
     Start downloading the book to DOCX.
     Runs in background.
+    max_chapters: Limit the number of chapters to download in this session (for rate limiting).
     """
     book = db.get_book(book_id)
     if not book:
@@ -94,12 +95,15 @@ async def download_book_task(book_id: int, background_tasks: BackgroundTasks):
     
     def run_download():
         try:
-            download_book(book['title'])
+            download_book(book['title'], max_chapters=max_chapters)
         except Exception as e:
             print(f"Download failed: {e}")
 
     background_tasks.add_task(run_download)
-    return {"message": f"Download started for {book['title']}. Process is running in background."}
+    msg = f"Download started for {book['title']}."
+    if max_chapters:
+        msg += f" Limited to {max_chapters} chapters."
+    return {"message": msg}
 
 @router.post("/{book_id}/cancel-download")
 async def cancel_download_task(book_id: int):
@@ -300,7 +304,7 @@ async def check_for_updates():
     return {"updated": len(updated), "books": updated}
 
 @router.post("/{book_id}/update-full")
-async def update_book_full(book_id: int, background_tasks: BackgroundTasks):
+async def update_book_full(book_id: int, background_tasks: BackgroundTasks, max_chapters: int = None):
     """
     One-click update: re-scrape book info, extract new chapters, and download them.
     Combines check-updates + continue-extract + download into a single endpoint.
@@ -365,7 +369,7 @@ async def update_book_full(book_id: int, background_tasks: BackgroundTasks):
         if new_chapters:
             from app.services.downloader import download_book
             try:
-                download_book(book['title'])
+                download_book(book['title'], max_chapters=max_chapters)
             except Exception as e:
                 print(f"❌ Download failed: {e}")
 
