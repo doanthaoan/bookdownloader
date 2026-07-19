@@ -162,11 +162,11 @@ class TruyenWikiDownloader:
         cookie_map = get_cookies()
         print(f"{Fore.CYAN}Using cookies: {cookie_map}")
         
-        domain = TRUYENWIKI['cookie_domain']
+        cookie_domain = TRUYENWIKI['cookie_domain']
         for name, value in cookie_map.items():
             if value:
                 try:
-                    self.driver.add_cookie({'name': name, 'value': value, 'domain': domain})
+                    self.driver.add_cookie({'name': name, 'value': value, 'domain': cookie_domain})
                 except Exception as e:
                     print(f"{Fore.YELLOW}Could not add cookie {name}: {e}")
 

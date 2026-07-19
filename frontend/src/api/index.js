@@ -20,6 +20,9 @@ export const bookApi = {
   redownloadDocxInfo: (id) => api.get(`/books/${id}/redownload-docx-info`),
   docxUrl: (id) => `${BASE_URL}/api/books/${id}/docx`,
   redownloadDocxUrl: (id) => `${BASE_URL}/api/books/${id}/redownload-docx`,
+  checkUpdates: () => api.get('/books/updates/check'),
+  continueExtract: (id) => api.post(`/books/${id}/continue-extract`),
+  updateFull: (id) => api.post(`/books/${id}/update-full`),
 };
 
 export const settingsApi = {

@@ -13,6 +13,11 @@ CREATE TABLE IF NOT EXISTS books (
     book_status TEXT DEFAULT 'planning',  -- planning, active, completed, on_hold
     download_status TEXT DEFAULT 'pending',  -- pending, in_progress, completed, failed
     book_url TEXT,                        -- URL to book's main page on website
+    author TEXT,                          -- Author name from book info page
+    book_web_status TEXT,                 -- Web status: Hoàn thành, Còn tiếp, Tạm Ngưng, Chưa xác minh
+    last_chapter_url TEXT,                -- URL of the latest chapter from book info page
+    last_chapter_title TEXT,              -- Title of the latest chapter
+    last_update_date TEXT,                -- Last update date string from book info page
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_accessed TIMESTAMP,

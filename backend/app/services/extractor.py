@@ -17,6 +17,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 import re
 import os
+from urllib.parse import urlparse
 
 # Lấy đường dẫn tuyệt đối của thư mục chứa file script.py hiện tại (thư mục original)
 # current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +28,21 @@ import os
     
 from app.database import get_database
 from app.config import TRUYENWIKI, get_cookies
+
+
+def normalize_url(url: str) -> str:
+    """Convert an absolute URL to relative by stripping the scheme+domain.
+    Relative URLs are passed through unchanged."""
+    if not url:
+        return url
+    parsed = urlparse(url)
+    if parsed.scheme:  # Absolute URL (e.g. https://example.com/path?q=1)
+        relative = parsed.path
+        if parsed.query:
+            relative += '?' + parsed.query
+        return relative
+    return url  # Already relative
+
 
 # print("Đang dùng db_manager tại:", db_manager.__file__)
 class ChapterListExtractor:
@@ -72,6 +88,61 @@ class ChapterListExtractor:
                 except Exception as e:
                     print(f"⚠️ Could not add cookie {name}: {e}")
     
+    def scrape_book_info(self, book_url: str) -> dict:
+        """
+        Scrape book metadata from the book info page (cover-info section).
+        Extracts author, web status, latest chapter, last update date.
+        """
+        if not self.driver:
+            self.driver = self._setup_selenium()
+            self._inject_cookies()
+
+        info = {}
+        try:
+            self.driver.get(book_url)
+            time.sleep(3)
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+
+            cover = soup.find('div', class_='cover-info')
+            if not cover:
+                print("⚠️ Could not find cover-info section")
+                return info
+
+            paragraphs = cover.find_all('p')
+            for p in paragraphs:
+                text = p.get_text(strip=True)
+
+                # Author: Tác giả: ...
+                if text.startswith('Tác giả:'):
+                    a = p.find('a')
+                    if a:
+                        info['author'] = a.get_text(strip=True)
+
+                # Web status: Tình trạng: ...
+                elif text.startswith('Tình trạng:'):
+                    a = p.find('a')
+                    if a:
+                        info['book_web_status'] = a.get_text(strip=True)
+
+                # Latest chapter: Mới nhất: ...
+                elif text.startswith('Mới nhất:'):
+                    a = p.find('a')
+                    if a:
+                        info['last_chapter_url'] = normalize_url(a.get('href', ''))
+                        info['last_chapter_title'] = a.get_text(strip=True)
+
+                # Last update: Thời gian đổi mới: ...
+                elif text.startswith('Thời gian đổi mới:'):
+                    span = p.find('span')
+                    if span:
+                        info['last_update_date'] = span.get_text(strip=True)
+
+            print(f"📖 Book info scraped: author={info.get('author')}, status={info.get('book_web_status')}")
+        except Exception as e:
+            print(f"❌ Failed to scrape book info: {e}")
+
+        return info
+
     def extract_chapter_list(self, book_url: str) -> list:
         """
         Extract chapter list from a book page
@@ -202,7 +273,7 @@ class ChapterListExtractor:
                         elements = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector)))
                         if elements:
                             for el in elements:
-                                url = el.get_attribute('href')
+                                url = normalize_url(el.get_attribute('href'))
                                 title = el.text.strip() or "Untitled Chapter"
                                 if url:
                                     all_chapters.append({'order': len(all_chapters)+1, 'title': title, 'url': url})
@@ -364,6 +435,9 @@ class ChapterListExtractor:
         print(f"🔗 URL: {book_url}")
         
         try:
+            # Scrape book metadata from cover-info section
+            book_info = self.scrape_book_info(book_url)
+
             # Extract chapters from website
             chapters = self.extract_chapter_list(book_url)
             
@@ -376,11 +450,19 @@ class ChapterListExtractor:
             if book:
                 book_id = book['id']
                 print(f"📚 Found existing book in DB: {book_title} (ID: {book_id})")
+                # Update book info from scraped data
+                if book_info:
+                    self.db.update_book_info(book_id, **book_info)
             else:
-                # Add new book to database
+                # Add new book to database with scraped info
                 book_id = self.db.add_book(
                     title=book_title,
-                    book_url=book_url
+                    book_url=book_url,
+                    author=book_info.get('author'),
+                    book_web_status=book_info.get('book_web_status'),
+                    last_chapter_url=book_info.get('last_chapter_url'),
+                    last_chapter_title=book_info.get('last_chapter_title'),
+                    last_update_date=book_info.get('last_update_date'),
                 )
                 print(f"📚 Added new book to DB: {book_title} (ID: {book_id})")
             

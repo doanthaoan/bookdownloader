@@ -13,8 +13,9 @@ router = APIRouter()
 db = get_database()
 
 @router.get("/")
-async def get_all_books(search: str = None, status: str = None, page: int = 1, per_page: int = 50):
-    """Fetch all books with optional search, status filter, and pagination."""
+async def get_all_books(search: str = None, status: str = None, author: str = None,
+                         book_web_status: str = None, page: int = 1, per_page: int = 50):
+    """Fetch all books with optional search, status filter, author, book_web_status, and pagination."""
     conn = db._get_connection()
     conn.row_factory = sqlite3.Row
 
@@ -27,6 +28,12 @@ async def get_all_books(search: str = None, status: str = None, page: int = 1, p
     if status:
         conditions.append("download_status = ?")
         params.append(status)
+    if author:
+        conditions.append("author LIKE ?")
+        params.append(f"%{author}%")
+    if book_web_status:
+        conditions.append("book_web_status = ?")
+        params.append(book_web_status)
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -245,3 +252,178 @@ async def delete_book(book_id: int):
     conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
     conn.commit()
     return {"message": "Book deleted successfully"}
+
+@router.get("/updates/check")
+async def check_for_updates():
+    """
+    Check all ongoing/unknown books to see if they have new chapters.
+    Returns a list of books that have updates.
+    """
+    from app.services.extractor import ChapterListExtractor
+
+    conn = db._get_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM books WHERE book_web_status IN ('Còn tiếp', 'Chưa xác minh') ORDER BY title"
+    ).fetchall()
+    books = [dict(r) for r in rows]
+
+    extractor = ChapterListExtractor()
+    updated = []
+    try:
+        for book in books:
+            if not book.get('book_url'):
+                continue
+            print(f"🔍 Checking updates for: {book['title']}")
+            info = extractor.scrape_book_info(book['book_url'])
+            if not info:
+                continue
+
+            # Check if the latest chapter URL is different
+            old_url = book.get('last_chapter_url') or ''
+            new_url = info.get('last_chapter_url') or ''
+            if new_url and new_url != old_url:
+                # Update book info in DB
+                db.update_book_info(book['id'], **info)
+                updated.append({
+                    "id": book['id'],
+                    "title": book['title'],
+                    "old_last_chapter": book.get('last_chapter_title'),
+                    "new_last_chapter": info.get('last_chapter_title'),
+                    "author": book.get('author'),
+                    "book_web_status": info.get('book_web_status', book.get('book_web_status')),
+                })
+                print(f"✅ Update found: {book['title']}: {book.get('last_chapter_title')} → {info.get('last_chapter_title')}")
+    finally:
+        extractor.close()
+
+    return {"updated": len(updated), "books": updated}
+
+@router.post("/{book_id}/update-full")
+async def update_book_full(book_id: int, background_tasks: BackgroundTasks):
+    """
+    One-click update: re-scrape book info, extract new chapters, and download them.
+    Combines check-updates + continue-extract + download into a single endpoint.
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    def run():
+        from app.services.extractor import ChapterListExtractor
+        extractor = ChapterListExtractor()
+        new_chapters = []
+        try:
+            # Step 1: Re-scrape book info (cheap — one page load)
+            info = extractor.scrape_book_info(book['book_url'])
+            if not info or not info.get('last_chapter_url'):
+                print(f"⚠️ Could not scrape book info for {book['title']}")
+                return
+
+            db.update_book_info(book_id, **info)
+
+            # Step 2: Check if their latest chapter is already in OUR chapters table
+            their_latest = info['last_chapter_url']
+            conn = db._get_connection()
+            row = conn.execute(
+                "SELECT 1 FROM chapters WHERE book_id = ? AND chapter_url = ? LIMIT 1",
+                (book_id, their_latest)
+            ).fetchone()
+            if row:
+                print(f"ℹ️ No new chapters for {book['title']} (latest chapter already in DB)")
+                return
+
+            # Step 3: New chapter detected — extract full list and diff
+            chapters = extractor.extract_chapter_list(book['book_url'])
+            if not chapters:
+                print(f"⚠️ No chapters found for {book['title']}")
+                return
+
+            existing = db.get_chapters_by_book(book_id)
+            existing_urls = {c['chapter_url'] for c in existing}
+
+            new_chapters = [c for c in chapters if c['url'] not in existing_urls]
+            if new_chapters:
+                max_order = max((c['chapter_order'] for c in existing), default=0)
+                for i, ch in enumerate(new_chapters, 1):
+                    db.add_chapter(
+                        book_id=book_id,
+                        chapter_order=max_order + i,
+                        chapter_title=ch['title'],
+                        chapter_url=ch['url']
+                    )
+                total = len(existing) + len(new_chapters)
+                db.update_book_status(book_id=book_id, total_chapters=total)
+                print(f"✅ Added {len(new_chapters)} new chapters to {book['title']} (total: {total})")
+            else:
+                print(f"ℹ️ No new chapters for {book['title']}")
+
+        finally:
+            extractor.close()
+
+        # Step 4: Download new chapters
+        if new_chapters:
+            from app.services.downloader import download_book
+            try:
+                download_book(book['title'])
+            except Exception as e:
+                print(f"❌ Download failed: {e}")
+
+    background_tasks.add_task(run)
+    return {"message": f"Full update started for {book['title']}. Checking & downloading new chapters..."}
+
+
+@router.post("/{book_id}/continue-extract")
+async def continue_extract(book_id: int, background_tasks: BackgroundTasks):
+    """
+    Continue extracting new chapters for a book that has been updated.
+    Saves to a new extraction (existing chapters preserved, new ones appended).
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    def run():
+        from app.services.extractor import ChapterListExtractor
+        extractor = ChapterListExtractor()
+        try:
+            # First re-scrape book info
+            info = extractor.scrape_book_info(book['book_url'])
+            if info:
+                db.update_book_info(book_id, **info)
+
+            # Extract fresh chapter list
+            chapters = extractor.extract_chapter_list(book['book_url'])
+            if not chapters:
+                print(f"No chapters found for {book['title']}")
+                return
+
+            # Get existing chapter URLs
+            existing = db.get_chapters_by_book(book_id)
+            existing_urls = {c['chapter_url'] for c in existing}
+
+            # Find new chapters
+            new_chapters = [c for c in chapters if c['url'] not in existing_urls]
+            if not new_chapters:
+                print(f"No new chapters for {book['title']}")
+                return
+
+            # Append new chapters to DB
+            max_order = max((c['chapter_order'] for c in existing), default=0)
+            for i, ch in enumerate(new_chapters, 1):
+                db.add_chapter(
+                    book_id=book_id,
+                    chapter_order=max_order + i,
+                    chapter_title=ch['title'],
+                    chapter_url=ch['url']
+                )
+
+            total = len(existing) + len(new_chapters)
+            db.update_book_status(book_id=book_id, total_chapters=total)
+            print(f"✅ Added {len(new_chapters)} new chapters to {book['title']} (total: {total})")
+
+        finally:
+            extractor.close()
+
+    background_tasks.add_task(run)
+    return {"message": f"Continue extraction started for {book['title']}. Checking for new chapters..."}

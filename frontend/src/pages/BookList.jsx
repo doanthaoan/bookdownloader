@@ -8,6 +8,8 @@ const BookList = ({ onViewBook }) => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [authorFilter, setAuthorFilter] = useState('');
+  const [webStatusFilter, setWebStatusFilter] = useState('');
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
@@ -18,6 +20,8 @@ const BookList = ({ onViewBook }) => {
       const params = { page, per_page: 20 };
       if (search) params.search = search;
       if (statusFilter) params.status = statusFilter;
+      if (authorFilter) params.author = authorFilter;
+      if (webStatusFilter) params.book_web_status = webStatusFilter;
       const res = await bookApi.getAll(params);
       const data = res.data;
       setBooks(data.books || []);
@@ -32,7 +36,7 @@ const BookList = ({ onViewBook }) => {
 
   useEffect(() => {
     fetchBooks();
-  }, [page, statusFilter]);
+  }, [page, statusFilter, authorFilter, webStatusFilter]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -88,6 +92,27 @@ const BookList = ({ onViewBook }) => {
               ))}
             </select>
           </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Author</label>
+            <input
+              className="border rounded px-3 py-2 text-sm w-40"
+              placeholder="Filter author..."
+              value={authorFilter}
+              onChange={e => { setAuthorFilter(e.target.value); setPage(1); }}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Web Status</label>
+            <select
+              className="border rounded px-3 py-2 text-sm"
+              value={webStatusFilter}
+              onChange={e => { setWebStatusFilter(e.target.value); setPage(1); }}
+            >
+              {['', 'Còn tiếp', 'Hoàn thành', 'Tạm Ngưng', 'Chưa xác minh'].map(s => (
+                <option key={s} value={s}>{s || 'Any'}</option>
+              ))}
+            </select>
+          </div>
           <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm">
             Search
           </button>
@@ -98,38 +123,53 @@ const BookList = ({ onViewBook }) => {
         <table className="w-full">
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-              <th className="px-6 py-4">Title</th>
-              <th className="px-6 py-4">Chapters</th>
-              <th className="px-6 py-4">Status</th>
-              <th className="px-6 py-4 text-right">Actions</th>
+              <th className="p-2">Title</th>
+              <th className="p-2">Author</th>
+              <th className="p-2">Web</th>
+              <th className="p-2">Chapters</th>
+              <th className="p-2">Status</th>
+              <th className="p-2 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={4} className="px-6 py-12 text-center text-gray-400">Loading...</td></tr>
+              <tr><td colSpan={6} className="px-6 py-12 text-center text-gray-400">Loading...</td></tr>
             ) : books.length === 0 ? (
-              <tr><td colSpan={4} className="px-6 py-12 text-center text-gray-400">No books found.</td></tr>
+              <tr><td colSpan={6} className="px-6 py-12 text-center text-gray-400">No books found.</td></tr>
             ) : (
               books.map(book => (
                 <tr key={book.id} className="hover:bg-gray-50 transition">
-                  <td className="px-6 py-4">
+                  <td className="p-2">
                     <button onClick={() => onViewBook(book.id)} className="font-medium text-gray-900 hover:text-blue-600 transition">
                       {book.title}
                     </button>
                   </td>
-                  <td className="px-6 py-4 text-sm text-gray-500">
+                  <td className="p-2 text-sm text-gray-500">{book.author || '—'}</td>
+                  <td className="p-2">
+                    {book.book_web_status && (
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                        book.book_web_status === 'Hoàn thành' ? 'bg-green-100 text-green-700' :
+                        book.book_web_status === 'Còn tiếp' ? 'bg-blue-100 text-blue-700' :
+                        book.book_web_status === 'Tạm Ngưng' ? 'bg-yellow-100 text-yellow-700' :
+                        'bg-gray-100 text-gray-700'
+                      }`}>
+                        {book.book_web_status}
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-2 text-sm text-gray-500">
                     <span className="font-medium">{book.downloaded_chapters || 0}</span> / {book.total_chapters || 0}
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="p-2">
                     <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${bookStatusColors[book.download_status] || 'bg-gray-100 text-gray-800'}`}>
                       {book.download_status.replace(/_/g, ' ')}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right space-x-2">
+                  <td className="p-2 text-right space-x-2">
                     <button onClick={() => onViewBook(book.id)} className="text-xs bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-3 py-1.5 rounded transition">
                       Details
                     </button>
-                    {(book.downloaded_chapters || 0) > 0 && (
+                    {/* {(book.downloaded_chapters || 0) > 0 && (
                       <a
                         href={bookApi.docxUrl(book.id)}
                         target="_blank"
@@ -137,7 +177,7 @@ const BookList = ({ onViewBook }) => {
                       >
                         DOCX
                       </a>
-                    )}
+                    )} */}
                     {book.download_status !== 'completed' && book.download_status !== 'in_progress' && (
                       <button onClick={() => handleDownload(book.id)} className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded transition">
                         Download

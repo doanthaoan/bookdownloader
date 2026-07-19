@@ -6,6 +6,7 @@ import Extraction from './pages/Extraction';
 import Settings from './pages/Settings';
 import BookDetails from './pages/BookDetails';
 import LogsViewer from './pages/LogsViewer';
+import UpdatesPage from './pages/UpdatesPage';
 
 function App() {
   const [activePage, setActivePage] = useState('dashboard');
@@ -28,6 +29,8 @@ function App() {
         return <Settings />;
       case 'logs':
         return <LogsViewer />;
+      case 'updates':
+        return <UpdatesPage onViewBook={(id) => navigateTo('bookdetails', id)} />;
       case 'bookdetails':
         return <BookDetails bookId={selectedBookId} onBack={() => navigateTo('booklist')} />;
       default:
@@ -38,7 +41,7 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-100">
       <Navbar activePage={activePage} setActivePage={(page) => navigateTo(page)} />
-      <main className="py-8 px-4 max-w-[1200px] mx-auto main-content">
+      <main className="py-8 px-4 max-w-[1600px] mx-auto main-content">
         {renderPage()}
       </main>
     </div>

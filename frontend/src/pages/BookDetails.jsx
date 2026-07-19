@@ -117,6 +117,26 @@ const BookDetails = ({ bookId, onBack }) => {
     }
   };
 
+  const handleContinueExtract = async () => {
+    if (!confirm('Check for new chapters and append them to the existing list?')) return;
+    try {
+      await bookApi.continueExtract(bookId);
+      alert('Continue extraction started. Refresh to see new chapters.');
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+  const handleUpdateFull = async () => {
+    if (!confirm('Check for updates, extract new chapters, and download them? This may take a while.')) return;
+    try {
+      await bookApi.updateFull(bookId);
+      alert('Full update started. Refresh the page to see progress after a moment.');
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
   if (loading) return <div className="text-center py-10 text-gray-500">Loading book details...</div>;
   if (!book) return <div className="text-center py-10 text-red-500">Book not found</div>;
 
@@ -137,6 +157,17 @@ const BookDetails = ({ bookId, onBack }) => {
             <div className="flex flex-wrap gap-4 mt-2 text-sm text-gray-500">
               <span>ID: {book.id}</span>
               {book.stt && <span>STT: {book.stt}</span>}
+              {book.author && <span>Tác giả: <strong>{book.author}</strong></span>}
+              {book.book_web_status && (
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                  book.book_web_status === 'Hoàn thành' ? 'bg-green-100 text-green-700' :
+                  book.book_web_status === 'Còn tiếp' ? 'bg-blue-100 text-blue-700' :
+                  book.book_web_status === 'Tạm Ngưng' ? 'bg-yellow-100 text-yellow-700' :
+                  'bg-gray-100 text-gray-700'
+                }`}>
+                  {book.book_web_status}
+                </span>
+              )}
               {failedChapters.length > 0 && <span className="text-red-500">{failedChapters.length} failed</span>}
             </div>
             {book.book_url && (
@@ -208,6 +239,18 @@ const BookDetails = ({ bookId, onBack }) => {
               className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
               Open Redownload DOCX
             </a>
+          )}
+          {book.book_web_status && ['Còn tiếp', 'Chưa xác minh'].includes(book.book_web_status) && (
+            <button onClick={handleContinueExtract}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+              Continue Extract
+            </button>
+          )}
+          {book.book_url && (
+            <button onClick={handleUpdateFull}
+              className="bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+              Update & Download
+            </button>
           )}
         </div>
       </div>

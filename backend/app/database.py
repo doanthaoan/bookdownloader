@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
+from urllib.parse import urlparse
 import logging
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class NovelDatabase:
             conn = self._get_connection()
             conn.executescript(schema_sql)
             conn.commit()
+            self._run_migrations(conn)
             self._schema_initialized = True
             logger.info(f"Database initialized at {self.db_path}")
         except FileNotFoundError:
@@ -76,11 +78,56 @@ class NovelDatabase:
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
+
+    def _run_migrations(self, conn):
+        """Run incremental schema migrations, ignoring errors if already applied."""
+        migrations = [
+            "ALTER TABLE books ADD COLUMN author TEXT",
+            "ALTER TABLE books ADD COLUMN book_web_status TEXT",
+            "ALTER TABLE books ADD COLUMN last_chapter_url TEXT",
+            "ALTER TABLE books ADD COLUMN last_chapter_title TEXT",
+            "ALTER TABLE books ADD COLUMN last_update_date TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_books_author ON books(author)",
+            "CREATE INDEX IF NOT EXISTS idx_books_web_status ON books(book_web_status)",
+        ]
+        for sql in migrations:
+            try:
+                conn.execute(sql)
+                conn.commit()
+            except Exception as e:
+                logger.debug(f"Migration skipped (already applied?): {sql[:60]}... → {e}")
+
+        # Migrate existing absolute URLs to relative (domain-independent)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+
+        # Fix chapters.chapter_url
+        for row in conn.execute("SELECT id, chapter_url FROM chapters WHERE chapter_url LIKE 'http%'").fetchall():
+            parsed = urlparse(row['chapter_url'])
+            relative = parsed.path
+            if parsed.query:
+                relative += '?' + parsed.query
+            conn.execute("UPDATE chapters SET chapter_url = ? WHERE id = ?", (relative, row['id']))
+            logger.info(f"Normalized chapter URL (id={row['id']}): {row['chapter_url'][:60]} → {relative[:60]}")
+
+        # Fix books.last_chapter_url
+        for row in conn.execute("SELECT id, last_chapter_url FROM books WHERE last_chapter_url LIKE 'http%'").fetchall():
+            parsed = urlparse(row['last_chapter_url'])
+            relative = parsed.path
+            if parsed.query:
+                relative += '?' + parsed.query
+            conn.execute("UPDATE books SET last_chapter_url = ? WHERE id = ?", (relative, row['id']))
+            logger.info(f"Normalized book last_chapter_url (id={row['id']})")
+        conn.commit()
     
     # === BOOK OPERATIONS ===
     
     def add_book(self, title: str, stt: str = None, book_url: str = None, 
-                 notes: str = None) -> int:
+                 notes: str = None, author: str = None,
+                 book_web_status: str = None,
+                 last_chapter_url: str = None,
+                 last_chapter_title: str = None,
+                 last_update_date: str = None) -> int:
         """
         Add a new book to the database
         
@@ -95,14 +142,29 @@ class NovelDatabase:
         conn = self._get_connection()
         cursor = conn.execute("""
             INSERT INTO books (stt, title, seo_title_basic, seo_title_full, 
-                             book_url, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (stt, title, seo_basic, seo_full, book_url, notes))
+                             book_url, notes, author, book_web_status,
+                             last_chapter_url, last_chapter_title, last_update_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (stt, title, seo_basic, seo_full, book_url, notes,
+              author, book_web_status, last_chapter_url, last_chapter_title, last_update_date))
         
         conn.commit()
         book_id = cursor.lastrowid
         logger.info(f"Added book: {title} (ID: {book_id})")
         return book_id
+
+    def update_book_info(self, book_id: int, **kwargs):
+        """Update metadata fields on a book (author, web_status, etc.)."""
+        allowed = {'author', 'book_web_status', 'last_chapter_url',
+                   'last_chapter_title', 'last_update_date', 'total_chapters'}
+        updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        if not updates:
+            return
+        set_clause = ', '.join(f"{k} = ?" for k in updates)
+        params = list(updates.values()) + [book_id]
+        conn = self._get_connection()
+        conn.execute(f"UPDATE books SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?", params)
+        conn.commit()
     
     def get_book(self, book_id: int) -> Optional[Dict]:
         """Get book by ID"""
