@@ -31,6 +31,12 @@ Convert a collection of Python scripts into a managed web application with a Rea
 - [x] Real-time download progress.
 - [x] Re-download All / per-chapter retry + `_redownload.docx`.
 - [x] Add book title heading in DOCX output.
+- [x] Updates page — check all ongoing books for new chapters.
+- [x] Continue Extract — append new chapters without re-extracting everything.
+- [x] Update & Download — one-click re-scrape → extract new → download new.
+- [x] Relative URLs everywhere — domain-independent chapter storage for portability.
+- [x] User-configurable global text cleaning rules (remove/replace, simple/regex, reorderable, enabled toggle).
+- [x] Test cleaning rules — fetch a chapter URL synchronously, apply rules, download result.
 - [x] Final testing and cleanup.
 
 ---
@@ -79,7 +85,14 @@ A default "TruyenWiki" source + profile is seeded, and existing books are linked
 - [ ] **Book List / Details** — show which source/profile a book belongs to.
 - [ ] **Settings page** — slim down to only general settings; source/profile config moved to new pages.
 
-## Future Considerations (v3)
+## Phase 6: Per-Book Text Cleaning Rules
+
+- [ ] **Database layer**: `book_cleaning_rules` junction table linking rules to books, or add a `scope` (global/book) + `book_id` column to `text_cleaning_rules`.
+- [ ] **Override strategy**: decide whether per-book rules run *in addition to* global rules, or replace them.
+- [ ] **Backend**: `TextCleaner.clean(text, book_id=None)` loads book-scoped rules when a book_id is given.
+- [ ] **Frontend**: per-book rule management on Book Details page, or a book selector on the Text Cleaning page.
+
+## Future Considerations (v3+)
 
 - **Encrypted password storage** in profiles.
 - **Proxy support** per source/profile.
