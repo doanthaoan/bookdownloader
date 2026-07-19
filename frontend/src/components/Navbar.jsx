@@ -5,6 +5,7 @@ const navItems = [
   { id: 'booklist', label: 'Book List' },
   { id: 'extract', label: 'Extract Book' },
   { id: 'updates', label: 'Updates' },
+  { id: 'textcleaning', label: 'Text Cleaning' },
   { id: 'logs', label: 'Logs' },
   { id: 'settings', label: 'Settings' },
 ];

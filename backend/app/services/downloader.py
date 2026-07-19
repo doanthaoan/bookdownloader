@@ -19,6 +19,7 @@ from docx import Document
 from colorama import Fore, init
 from app.config import TRUYENWIKI, get_cookies
 from app.database import get_database
+from app.services.text_cleaner import TextCleaner
 
 # Initialize colorama
 init(autoreset=True)
@@ -79,6 +80,7 @@ class TruyenWikiDownloader:
         self._redownload = redownload
 
         self.db = get_database()
+        self.cleaner = TextCleaner()
         
         # Get book info from database
         self.book = self.db.get_book_by_title(book_name)
@@ -170,30 +172,6 @@ class TruyenWikiDownloader:
                 except Exception as e:
                     print(f"{Fore.YELLOW}Could not add cookie {name}: {e}")
 
-    def clean_text(self, text):
-        """Remove invalid XML characters and specific unwanted text from text, then apply replacements"""
-        if not text:
-            return ""
-            
-        # Define list of text patterns to remove
-        unwanted_patterns = [
-            r'[\x00-\x1F\x7F]',  # Invalid XML characters
-            r'·',                 # Specific dot character
-            r'║༺☆༻ Convert by DuFengYu on Wikidich ༺☆༻║'
-        ]
-        
-        for pattern in unwanted_patterns:
-            text = re.sub(pattern, '', text)
-            
-        # Apply text replacements after removal
-        # Replace em dash with three dots
-        text = text.replace('—', '...')
-        
-        # Remove duplicated "Chương" or "chương" patterns (e.g., "Chương 184 chương 184" -> "Chương 184")
-        text = re.sub(r'(Chương|chương)\s+(\d+)\s+\1\s+\2', r'\1 \2', text, flags=re.IGNORECASE)
-        
-        return text
-    
     def get_downloaded_urls(self):
         """Get set of already downloaded chapter URLs from success log"""
         if not os.path.exists(self.success_log):
@@ -241,7 +219,7 @@ class TruyenWikiDownloader:
         if not content_tag:
             raise Exception("Could not find content-body-wrapper after waiting.")
 
-        title_text = self.clean_text(title_tag.get_text())
+        title_text = self.cleaner.clean(title_tag.get_text())
         
         # Save to HTML (Appended mode)
         # with open(self.output_html, 'a', encoding='utf-8') as html_file:
@@ -253,7 +231,7 @@ class TruyenWikiDownloader:
         # Add to DOCX object
         self.docx_doc.add_heading(title_text, level=1)
         for p in content_tag.find_all('p'):
-            self.docx_doc.add_paragraph(self.clean_text(p.get_text()))
+            self.docx_doc.add_paragraph(self.cleaner.clean(p.get_text()))
 
         return title_text, full_url
 

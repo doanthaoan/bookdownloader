@@ -118,6 +118,41 @@ class NovelDatabase:
                 relative += '?' + parsed.query
             conn.execute("UPDATE books SET last_chapter_url = ? WHERE id = ?", (relative, row['id']))
             logger.info(f"Normalized book last_chapter_url (id={row['id']})")
+
+        # Create text_cleaning_rules table (idempotent)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS text_cleaning_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_type TEXT NOT NULL CHECK(rule_type IN ('remove', 'replace')),
+                    match_type TEXT NOT NULL CHECK(match_type IN ('simple', 'regex')),
+                    find_text TEXT NOT NULL,
+                    replace_text TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    description TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("PRAGMA table_info(text_cleaning_rules)")
+        except Exception as e:
+            logger.debug(f"text_cleaning_rules creation skipped: {e}")
+
+        # Seed defaults if table is empty
+        existing = conn.execute("SELECT COUNT(*) FROM text_cleaning_rules").fetchone()[0]
+        if existing == 0:
+            defaults = [
+                ("remove", "regex",  r"[\x00-\x1F\x7F]", "",   1, 0,  "Invalid XML characters"),
+                ("remove", "simple", "·",                      "",   1, 1,  "Specific dot character"),
+                ("remove", "simple", "║༺☆༻ Convert by DuFengYu on Wikidich ༺☆༻║", "", 1, 2, "Converter signature"),
+                ("replace", "simple", "—", "...",                1, 3,  "Em dash to three dots"),
+                ("remove", "regex",  r"(Chương|chương)\s+(\d+)\s+\1\s+\2", "", 1, 4, "Deduplicate chapter number in title"),
+            ]
+            for r in defaults:
+                conn.execute(
+                    "INSERT INTO text_cleaning_rules (rule_type, match_type, find_text, replace_text, enabled, sort_order, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    r
+                )
         conn.commit()
     
     # === BOOK OPERATIONS ===
@@ -333,6 +368,67 @@ class NovelDatabase:
         """, (key, value))
         conn.commit()
     
+    # === TEXT CLEANING RULES OPERATIONS ===
+
+    def get_text_cleaning_rules(self, enabled_only: bool = False) -> List[Dict]:
+        """Get all text cleaning rules, ordered by sort_order."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        if enabled_only:
+            rows = conn.execute("SELECT * FROM text_cleaning_rules WHERE enabled = 1 ORDER BY sort_order").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM text_cleaning_rules ORDER BY sort_order").fetchall()
+        return [dict(r) for r in rows]
+
+    def add_text_cleaning_rule(self, rule_type: str, match_type: str, find_text: str,
+                               replace_text: str = '', enabled: int = 1,
+                               sort_order: int = None, description: str = '') -> int:
+        conn = self._get_connection()
+        if sort_order is None:
+            row = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM text_cleaning_rules").fetchone()
+            sort_order = row[0]
+        conn.execute("""
+            INSERT INTO text_cleaning_rules (rule_type, match_type, find_text, replace_text, enabled, sort_order, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (rule_type, match_type, find_text, replace_text, enabled, sort_order, description))
+        conn.commit()
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def update_text_cleaning_rule(self, rule_id: int, **kwargs) -> bool:
+        allowed = {'rule_type', 'match_type', 'find_text', 'replace_text', 'enabled', 'sort_order', 'description'}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return False
+        set_clause = ', '.join(f"{k} = ?" for k in updates)
+        params = list(updates.values()) + [rule_id]
+        conn = self._get_connection()
+        conn.execute(f"UPDATE text_cleaning_rules SET {set_clause} WHERE id = ?", params)
+        conn.commit()
+        return True
+
+    def delete_text_cleaning_rule(self, rule_id: int) -> bool:
+        conn = self._get_connection()
+        conn.execute("DELETE FROM text_cleaning_rules WHERE id = ?", (rule_id,))
+        conn.commit()
+        return True
+
+    def reorder_text_cleaning_rule(self, rule_id: int, new_order: int):
+        """Move a rule to a new position and shift others accordingly."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        rules = conn.execute("SELECT id, sort_order FROM text_cleaning_rules ORDER BY sort_order").fetchall()
+        orders = [r['sort_order'] for r in rules]
+        ids = [r['id'] for r in rules]
+        if rule_id not in ids:
+            return
+        old_idx = ids.index(rule_id)
+        new_idx = max(0, min(len(rules) - 1, new_order))
+        ids.pop(old_idx)
+        ids.insert(new_idx, rule_id)
+        for i, rid in enumerate(ids):
+            conn.execute("UPDATE text_cleaning_rules SET sort_order = ? WHERE id = ?", (i, rid))
+        conn.commit()
+
     # === UTILITY METHODS ===
     
     def get_download_stats(self) -> Dict:

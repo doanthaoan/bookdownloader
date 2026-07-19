@@ -88,6 +88,19 @@ BEGIN
     UPDATE chapters SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
 
+-- Text cleaning rules for chapter content
+CREATE TABLE IF NOT EXISTS text_cleaning_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_type TEXT NOT NULL CHECK(rule_type IN ('remove', 'replace')),
+    match_type TEXT NOT NULL CHECK(match_type IN ('simple', 'regex')),
+    find_text TEXT NOT NULL,
+    replace_text TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    description TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Views for common reporting needs
 CREATE VIEW IF NOT EXISTS vw_books_progress AS
 SELECT 

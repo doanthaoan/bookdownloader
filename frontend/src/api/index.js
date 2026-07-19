@@ -41,4 +41,13 @@ export const logsApi = {
   read: (filename, lines = 200, offset = 0) => api.get(`/logs/${encodeURIComponent(filename)}`, { params: { lines, offset } }),
 };
 
+export const textCleaningApi = {
+  list: () => api.get('/text-cleaning'),
+  add: (params) => api.post('/text-cleaning', null, { params }),
+  update: (id, params) => api.put(`/text-cleaning/${id}`, null, { params }),
+  reorder: (id, newOrder) => api.put(`/text-cleaning/${id}/reorder`, null, { params: { new_order: newOrder } }),
+  delete: (id) => api.delete(`/text-cleaning/${id}`),
+  test: (chapterUrl) => api.post('/text-cleaning/test', null, { params: { chapter_url: chapterUrl } }),
+};
+
 export default api;

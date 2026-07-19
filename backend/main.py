@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.books import router as books_router
 from app.api.settings import router as settings_router
 from app.api.logs import router as logs_router
+from app.api.text_cleaning import router as text_cleaning_router
 from app.config import load_truyenwiki_config
 from app.services.downloader import cancel_all_downloads
 
@@ -20,6 +21,7 @@ app.add_middleware(
 app.include_router(books_router, prefix="/api/books", tags=["Books"])
 app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
 app.include_router(logs_router, prefix="/api/logs", tags=["Logs"])
+app.include_router(text_cleaning_router, prefix="/api/text-cleaning", tags=["Text Cleaning"])
 
 @app.on_event("startup")
 async def startup():
