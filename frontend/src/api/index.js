@@ -10,7 +10,7 @@ export const bookApi = {
   getOne: (id) => api.get(`/books/${id}`),
   extract: (title, url) => api.post('/books/extract', null, { params: { book_title: title, book_url: url } }),
   getChapters: (id) => api.get(`/books/${id}/chapters`),
-  download: (id) => api.post(`/books/${id}/download`),
+  download: (id, params = {}) => api.post(`/books/${id}/download`, null, { params }),
   cancelDownload: (id) => api.post(`/books/${id}/cancel-download`),
   getProgress: (id) => api.get(`/books/${id}/progress`),
   delete: (id) => api.delete(`/books/${id}`),
@@ -22,7 +22,7 @@ export const bookApi = {
   redownloadDocxUrl: (id) => `${BASE_URL}/api/books/${id}/redownload-docx`,
   checkUpdates: () => api.get('/books/updates/check'),
   continueExtract: (id) => api.post(`/books/${id}/continue-extract`),
-  updateFull: (id) => api.post(`/books/${id}/update-full`),
+  updateFull: (id, params = {}) => api.post(`/books/${id}/update-full`, null, { params }),
 };
 
 export const settingsApi = {

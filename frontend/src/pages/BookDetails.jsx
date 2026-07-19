@@ -10,6 +10,7 @@ const BookDetails = ({ bookId, onBack }) => {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(null);
   const [redownloadDocxExists, setRedownloadDocxExists] = useState(false);
+  const [maxChapters, setMaxChapters] = useState('');
   const pollingRef = useRef(null);
 
   useEffect(() => {
@@ -68,7 +69,10 @@ const BookDetails = ({ bookId, onBack }) => {
     setDownloading(true);
     startPolling();
     try {
-      await bookApi.download(bookId);
+      const params = {};
+      const val = parseInt(maxChapters, 10);
+      if (val > 0) params.max_chapters = val;
+      await bookApi.download(bookId, params);
     } catch (err) {
       alert('Download failed: ' + err.message);
       stopPolling();
@@ -130,7 +134,10 @@ const BookDetails = ({ bookId, onBack }) => {
   const handleUpdateFull = async () => {
     if (!confirm('Check for updates, extract new chapters, and download them? This may take a while.')) return;
     try {
-      await bookApi.updateFull(bookId);
+      const params = {};
+      const val = parseInt(maxChapters, 10);
+      if (val > 0) params.max_chapters = val;
+      await bookApi.updateFull(bookId, params);
       alert('Full update started. Refresh the page to see progress after a moment.');
     } catch (err) {
       alert('Error: ' + err.message);
@@ -206,7 +213,14 @@ const BookDetails = ({ bookId, onBack }) => {
           </div>
         )}
 
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap gap-2 items-center">
+          <div className="flex items-center gap-1 mr-1">
+            <label className="text-xs text-gray-500 whitespace-nowrap">Max:</label>
+            <input type="number" min="0" value={maxChapters}
+              onChange={e => setMaxChapters(e.target.value)}
+              placeholder="no limit"
+              className="w-20 border rounded px-2 py-1.5 text-sm text-center" />
+          </div>
           {downloading ? (
             <button onClick={handleCancel} className="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded text-sm font-medium transition">
               Cancel Download

@@ -235,9 +235,13 @@ class TruyenWikiDownloader:
 
         return title_text, full_url
 
-    def run(self):
+    def run(self, max_chapters=None):
+        """Main download process.
         
-        """Main download process"""
+        Args:
+            max_chapters: Maximum number of chapters to process in this session.
+                          None = no limit.
+        """
         if not self.chapters:
             print(f"{Fore.RED}No chapters to process for book '{self.book_name}'")
             print(f"{Fore.YELLOW}Please extract chapters first using the chapter extractor.")
@@ -270,6 +274,12 @@ class TruyenWikiDownloader:
         print(f"📚 Found {len(self.chapters)} total chapters. "
               f"{len(downloaded_urls)} already done. "
               f"{len(chapters_to_process)} remaining.")
+
+        limited = False
+        if max_chapters and len(chapters_to_process) > max_chapters:
+            chapters_to_process = chapters_to_process[:max_chapters]
+            limited = True
+            print(f"🔢 Session limited to {max_chapters} chapters.")
         
         self.log_event(self.success_log, "RESUMING/STARTING SESSION")
         
@@ -355,6 +365,8 @@ class TruyenWikiDownloader:
         # Update book status in database
         if cancelled:
             new_status = 'cancelled'
+        elif limited:
+            new_status = 'paused'
         elif fail_count == 0:
             new_status = 'completed'
         elif success_count == 0:
@@ -517,16 +529,17 @@ class TruyenWikiDownloader:
         # print(f"{Fore.BLUE}File HTML: {self.output_html}")
 
 # Convenience function for easy usage
-def download_book(book_name: str):
+def download_book(book_name: str, max_chapters: int = None):
     """
     Download a book by name
-    
+
     Args:
         book_name: Title of the book to download
+        max_chapters: Maximum number of chapters to process (None = no limit)
     """
     downloader = TruyenWikiDownloader(book_name)
     try:
-        downloader.run()
+        downloader.run(max_chapters=max_chapters)
     except Exception as e:
         print(f"❌ Error downloading book '{book_name}': {e}")
         raise
