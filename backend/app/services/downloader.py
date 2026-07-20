@@ -172,15 +172,8 @@ class TruyenWikiDownloader:
                 except Exception as e:
                     print(f"{Fore.YELLOW}Could not add cookie {name}: {e}")
 
-    def get_downloaded_urls(self):
-        """Get set of already downloaded chapter URLs from success log"""
-        if not os.path.exists(self.success_log):
-            return set()
-        with open(self.success_log, 'r', encoding='utf-8') as f:
-            return {line.split(': ')[-1].strip() for line in f if ': ' in line}
-
     def log_event(self, log_path: str, message: str):
-        """Log an event to the specified log file"""
+        """Log an event to the specified log file (write-only audit trail)."""
         with open(log_path, 'a', encoding='utf-8') as f:
             f.write(f"{time.strftime('%X %x')}: {message}\n")
 
@@ -257,22 +250,18 @@ class TruyenWikiDownloader:
             download_status='in_progress',
         )
 
-        # Get already downloaded chapters
-        downloaded_urls = self.get_downloaded_urls()
-        chapters_to_process = [
-            c for c in self.chapters 
-            if (c['chapter_url'] if c['chapter_url'].startswith("http") 
-                else self.domain + c['chapter_url']) not in downloaded_urls
-        ]
-        
+        # Filter to only pending chapters (DB is the source of truth)
+        chapters_to_process = [c for c in self.chapters if c['download_status'] == 'pending']
+
         if not chapters_to_process:
             print(f"{Fore.GREEN}All chapters already downloaded for '{self.book_name}'!")
             self.driver.quit()
             unregister_download(self.book_id)
             return
 
+        completed = len(self.chapters) - len(chapters_to_process)
         print(f"📚 Found {len(self.chapters)} total chapters. "
-              f"{len(downloaded_urls)} already done. "
+              f"{completed} already done. "
               f"{len(chapters_to_process)} remaining.")
 
         limited = False
