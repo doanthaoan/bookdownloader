@@ -123,6 +123,7 @@ const BookList = ({ onViewBook }) => {
         <table className="w-full">
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              <th className="p-2">ID</th>  
               <th className="p-2">Title</th>
               <th className="p-2">Author</th>
               <th className="p-2">Web</th>
@@ -133,12 +134,13 @@ const BookList = ({ onViewBook }) => {
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={6} className="px-6 py-12 text-center text-gray-400">Loading...</td></tr>
+              <tr><td colSpan={7} className="px-6 py-12 text-center text-gray-400">Loading...</td></tr>
             ) : books.length === 0 ? (
-              <tr><td colSpan={6} className="px-6 py-12 text-center text-gray-400">No books found.</td></tr>
+              <tr><td colSpan={7} className="px-6 py-12 text-center text-gray-400">No books found.</td></tr>
             ) : (
               books.map(book => (
                 <tr key={book.id} className="hover:bg-gray-50 transition">
+                  <td className="p-2 text-sm text-gray-500">{book.id}</td>  
                   <td className="p-2">
                     <button onClick={() => onViewBook(book.id)} className="font-medium text-gray-900 hover:text-blue-600 transition">
                       {book.title}
@@ -188,9 +190,9 @@ const BookList = ({ onViewBook }) => {
                         In Progress
                       </button>
                     )}
-                    <button onClick={() => handleDelete(book.id)} className="text-xs bg-red-50 border border-red-200 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded transition">
+                    {/* <button onClick={() => handleDelete(book.id)} className="text-xs bg-red-50 border border-red-200 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded transition">
                       Delete
-                    </button>
+                    </button> */}
                   </td>
                 </tr>
               ))

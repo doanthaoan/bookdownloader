@@ -17,7 +17,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 from docx import Document
 from colorama import Fore, init
-from app.config import TRUYENWIKI, get_cookies
+from app.config import TRUYENWIKI, get_cookies, get_user_agent
 from app.database import get_database
 from app.services.text_cleaner import TextCleaner
 
@@ -61,12 +61,6 @@ def get_download_progress(book_id: int) -> dict:
         "current_title": getattr(dl, '_current_title', ''),
     }
 
-# Constants
-BOOK_PATH = "./data/downloads/truyen"
-LOGS_PATH = "./data/logs"
-SOURCE_PATH = "./data/book_source"
-SAVE_INTERVAL = 10  # Save the DOCX file every 10 successful chapters
-
 class TruyenWikiDownloader:
     def __init__(self, book_name: str, redownload: bool = False):
         """
@@ -92,13 +86,21 @@ class TruyenWikiDownloader:
         self.book_name = self.book['seo_title_basic']  # Use base_title for cleaner filenames
         self.domain = TRUYENWIKI['book_domain']
         
+        # Load paths and settings from DB (with fallback to TRUYENWIKI config)
+        self.book_path = self.db.get_setting('book_path') or TRUYENWIKI['book_path']
+        self.logs_path = self.db.get_setting('logs_path') or TRUYENWIKI['logs_path']
+        self.save_interval = int(self.db.get_setting('save_interval') or '10')
+        self.page_load_timeout = int(self.db.get_setting('page_load_timeout') or '15')
+        self.delay_min = int(self.db.get_setting('download_delay_min') or '4')
+        self.delay_max = int(self.db.get_setting('download_delay_max') or '6')
+        
         # Setup output paths
         if redownload:
-            self.output_docx = os.path.join(BOOK_PATH, f"{self.book_id}_{self.book_name}_redownload.docx")
+            self.output_docx = os.path.join(self.book_path, f"{self.book_id}_{self.book_name}_redownload.docx")
         else:
-            self.output_docx = os.path.join(BOOK_PATH, f"{self.book_id}_{self.book_name}.docx")
-        self.success_log = os.path.join(LOGS_PATH, f"{self.book_id}_{self.book_name}_success.txt")
-        self.failure_log = os.path.join(LOGS_PATH, f"{self.book_id}_{self.book_name}_failure.txt")
+            self.output_docx = os.path.join(self.book_path, f"{self.book_id}_{self.book_name}.docx")
+        self.success_log = os.path.join(self.logs_path, f"{self.book_id}_{self.book_name}_success.txt")
+        self.failure_log = os.path.join(self.logs_path, f"{self.book_id}_{self.book_name}_failure.txt")
         
         self._ensure_dirs()
         
@@ -117,7 +119,7 @@ class TruyenWikiDownloader:
     
     def _ensure_dirs(self):
         """Ensure required directories exist"""
-        for path in [BOOK_PATH, LOGS_PATH]:
+        for path in [self.book_path, self.logs_path]:
             os.makedirs(path, exist_ok=True)
     
     def _load_existing_docx(self):
@@ -145,10 +147,7 @@ class TruyenWikiDownloader:
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled") 
-        chrome_options.add_argument(
-            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        chrome_options.add_argument(f"user-agent={get_user_agent()}")
         
         driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
@@ -194,12 +193,12 @@ class TruyenWikiDownloader:
         # Navigate to the chapter
         self.driver.get(full_url)
         
-        # WAIT: Wait up to 15 seconds for the content wrapper to appear
-        wait = WebDriverWait(self.driver, 15)
+        # WAIT: Wait for the content wrapper to appear (timeout from DB settings)
+        wait = WebDriverWait(self.driver, self.page_load_timeout)
         wait.until(EC.presence_of_element_located((By.CLASS_NAME, "content-body-wrapper")))
         
-        # Anti-bot cooldown & Waiting for full content: Random wait between 4-6 seconds
-        time.sleep(random.randint(4, 6))
+        # Anti-bot cooldown: random delay from DB settings
+        time.sleep(random.randint(self.delay_min, self.delay_max))
         
         # Get the rendered HTML
         soup = BeautifulSoup(self.driver.page_source, 'html.parser')
@@ -310,8 +309,8 @@ class TruyenWikiDownloader:
                     success_count += 1
                     self._success_count = success_count
                     
-                    # Save checkpoint every SAVE_INTERVAL chapters
-                    if success_count % SAVE_INTERVAL == 0:
+                    # Save checkpoint every save_interval chapters
+                    if self.save_interval and success_count % self.save_interval == 0:
                         self.docx_doc.save(self.output_docx)
                         print(f"{Fore.CYAN}--- Checkpoint: DOCX saved automatically ---")
                     
@@ -434,7 +433,7 @@ class TruyenWikiDownloader:
                     success_count += 1
                     self._success_count = success_count
 
-                    if success_count % SAVE_INTERVAL == 0:
+                    if self.save_interval and success_count % self.save_interval == 0:
                         self.docx_doc.save(self.output_docx)
 
                     print(f"{Fore.GREEN}Redownload success: {title} ({index}/{len(chapters_to_process)})")

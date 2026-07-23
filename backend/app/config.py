@@ -1,7 +1,4 @@
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # Base default config (will be overridden from DB)
 TRUYENWIKI = {
@@ -24,12 +21,14 @@ STATIC_COOKIES = {
     'bs_onshow': '1'
 }
 
-# Env fallback defaults
-ENV_COOKIES = {key: os.getenv(key.upper()) for key in COOKIE_KEYS}
+USER_AGENT_DEFAULT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 def load_truyenwiki_config():
-    """Load TRUYENWIKI config from DB, with env fallback."""
+    """Load TRUYENWIKI config from DB."""
     from app.database import get_database
     db = get_database()
 
@@ -50,15 +49,22 @@ def load_truyenwiki_config():
 
 def get_cookies():
     """
-    Get all cookies from DB with env fallback.
+    Get all cookies from DB.
     Returns a combined dict of dynamic + static cookies.
     """
     from app.database import get_database
     db = get_database()
     result = {}
     for key in COOKIE_KEYS:
-        val = db.get_setting(f"cookie_{key}") or ENV_COOKIES.get(key)
+        val = db.get_setting(f"cookie_{key}")
         if val:
             result[key] = val
     result.update(STATIC_COOKIES)
     return result
+
+
+def get_user_agent():
+    """Get user agent from DB with fallback default."""
+    from app.database import get_database
+    db = get_database()
+    return db.get_setting('user_agent') or USER_AGENT_DEFAULT

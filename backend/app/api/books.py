@@ -220,6 +220,7 @@ async def get_docx(book_id: int):
     
     file_name = f"{book_id}_{book['seo_title_basic']}.docx"
     base_dir = Path(__file__).parent.parent.parent
+    print(f"Looking for DOCX file at: {base_dir / TRUYENWIKI['book_path'] / file_name}")
     file_path = base_dir / TRUYENWIKI['book_path'] / file_name
     
     if not file_path.exists():
