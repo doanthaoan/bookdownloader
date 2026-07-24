@@ -14,8 +14,9 @@ db = get_database()
 
 @router.get("/")
 async def get_all_books(search: str = None, status: str = None, author: str = None,
-                         book_web_status: str = None, page: int = 1, per_page: int = 50):
-    """Fetch all books with optional search, status filter, author, book_web_status, and pagination."""
+                         book_web_status: str = None, sent: int = None,
+                         page: int = 1, per_page: int = 50):
+    """Fetch all books with optional search, status filter, author, book_web_status, sent, and pagination."""
     conn = db._get_connection()
     conn.row_factory = sqlite3.Row
 
@@ -34,6 +35,9 @@ async def get_all_books(search: str = None, status: str = None, author: str = No
     if book_web_status:
         conditions.append("book_web_status = ?")
         params.append(book_web_status)
+    if sent is not None:
+        conditions.append("is_sent = ?")
+        params.append(sent)
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -41,10 +45,10 @@ async def get_all_books(search: str = None, status: str = None, author: str = No
     count_row = conn.execute(f"SELECT COUNT(*) FROM books {where}", params).fetchone()
     total = count_row[0]
 
-    # Paginated results
+    # Paginated results — favorites first, then by creation date
     offset = (page - 1) * per_page
     rows = conn.execute(
-        f"SELECT * FROM books {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        f"SELECT * FROM books {where} ORDER BY is_favorite DESC, created_at DESC LIMIT ? OFFSET ?",
         params + [per_page, offset]
     ).fetchall()
 
@@ -249,6 +253,26 @@ async def get_docx_info(book_id: int):
         "file_path": str(file_path.resolve()) if file_path.exists() else None,
         "size": file_path.stat().st_size if file_path.exists() else 0,
     }
+
+@router.post("/{book_id}/toggle-favorite")
+async def toggle_favorite(book_id: int):
+    """Toggle the favorite status of a book."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    new_val = 0 if book.get('is_favorite') else 1
+    db.update_book_info(book_id, is_favorite=new_val)
+    return {"is_favorite": new_val, "message": "Favorite updated" if new_val else "Removed from favorites"}
+
+@router.post("/{book_id}/toggle-sent")
+async def toggle_sent(book_id: int):
+    """Toggle the sent status of a book."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    new_val = 0 if book.get('is_sent') else 1
+    db.update_book_info(book_id, is_sent=new_val)
+    return {"is_sent": new_val, "message": "Marked as sent" if new_val else "Marked as not sent"}
 
 @router.delete("/{book_id}")
 async def delete_book(book_id: int):

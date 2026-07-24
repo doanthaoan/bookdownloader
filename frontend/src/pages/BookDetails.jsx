@@ -155,7 +155,21 @@ const BookDetails = ({ bookId, onBack }) => {
 
   return (
     <Layout>
-      <button onClick={onBack} className="mb-4 text-sm text-gray-500 hover:text-blue-600 transition">&larr; Back</button>
+      <div className="flex items-center justify-between mb-4">
+        <button onClick={onBack} className="text-sm text-gray-500 hover:text-blue-600 transition">&larr; Back</button>
+        <div className="flex gap-2">
+          <button onClick={async () => { await bookApi.toggleFavorite(bookId); fetchData(); }}
+            className={`text-lg leading-none px-2 py-1 rounded transition ${book.is_favorite ? 'text-yellow-500 bg-yellow-50' : 'text-gray-300 hover:text-yellow-400 hover:bg-gray-50'}`}
+            title={book.is_favorite ? 'Remove from favorites' : 'Add to favorites'}>
+            {book.is_favorite ? '★' : '☆'} Favorites
+          </button>
+          <button onClick={async () => { await bookApi.toggleSent(bookId); fetchData(); }}
+            className={`text-sm leading-none px-2 py-1 rounded transition ${book.is_sent ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-400 hover:text-gray-600'}`}
+            title={book.is_sent ? 'Mark as not sent' : 'Mark as sent'}>
+            ✓ {book.is_sent ? 'Sent' : 'Not sent'}
+          </button>
+        </div>
+      </div>
 
       <div className="bg-white rounded-lg shadow p-6 mb-6">
         <div className="flex flex-col lg:flex-row lg:justify-between lg:items-start gap-4">
@@ -208,7 +222,7 @@ const BookDetails = ({ bookId, onBack }) => {
             </div>
             <div className="text-indigo-600 mt-1">
               {progress.success_count} success / {progress.fail_count} failed
-              &nbsp;— chapter {progress.current_index} of {progress.total} remaining
+              &nbsp;— chapter {progress.current_index} of {progress.total} in this session
             </div>
           </div>
         )}

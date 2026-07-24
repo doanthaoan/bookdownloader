@@ -56,7 +56,7 @@ def get_download_progress(book_id: int) -> dict:
         "cancelled": dl._cancel_flag,
         "success_count": getattr(dl, '_success_count', 0),
         "fail_count": getattr(dl, '_fail_count', 0),
-        "total": len(getattr(dl, 'chapters', [])),
+        "total": getattr(dl, '_remaining_count', 0),
         "current_index": getattr(dl, '_current_index', 0),
         "current_title": getattr(dl, '_current_title', ''),
     }
@@ -137,6 +137,14 @@ class TruyenWikiDownloader:
             for p in list(doc.paragraphs):
                 p._element.getparent().remove(p._element)
             doc.add_heading(self.book['title'], level=0)
+            if self.book.get('author'):
+                p = doc.add_paragraph()
+                p.alignment = 0  # left
+                run_label = p.add_run('Tác giả: ')
+                run_label.italic = True
+                run_author = p.add_run(self.book['author'])
+                run_author.bold = True
+                run_author.italic = True
 
         return doc
     
@@ -277,6 +285,7 @@ class TruyenWikiDownloader:
         cancelled = False
 
         # Expose progress for real-time tracking
+        self._remaining_count = len(chapters_to_process)
         self._success_count = 0
         self._fail_count = 0
         self._current_index = 0
@@ -362,10 +371,11 @@ class TruyenWikiDownloader:
         else:
             new_status = 'completed_with_errors'
             
+        total_downloaded = completed + success_count
         self.db.update_book_status(
             book_id=self.book_id,
             download_status=new_status,
-            downloaded_chapters=success_count
+            downloaded_chapters=total_downloaded
         )
         
         self._print_summary(success_count, fail_count, len(chapters_to_process), total_duration)
@@ -408,6 +418,7 @@ class TruyenWikiDownloader:
         start_total = time.time()
         cancelled = False
 
+        self._remaining_count = len(chapters_to_process)
         self._success_count = 0
         self._fail_count = 0
         self._current_index = 0

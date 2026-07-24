@@ -41,6 +41,45 @@ Convert a collection of Python scripts into a managed web application with a Rea
 
 ---
 
+# Version 1.1 — Quality-of-Life Features
+
+## Goal
+Add user-facing enhancements to the book list, DOCX output, and settings UI, plus fix accumulated bugs.
+
+## Changes (v1.0 → v1.1)
+
+### Application Settings
+- [x] Created `get_user_agent()` shared helper — all Selenium entry points (downloader, extractor, login, text_cleaning) read `user_agent` from DB.
+- [x] Removed `ENV_COOKIES` and `dotenv` dependency from `config.py` — cookies come strictly from DB now.
+- [x] Removed orphaned `SAVE_INTERVAL` module constant from `downloader.py`.
+- [x] Frontend Settings page: **Download Settings** subsection (delays, timeout, save interval) with descriptions.
+- [x] Frontend Settings page: **Browser Settings** subsection with User Agent dropdown (6 presets + Custom).
+
+### Book Management
+- [x] Added `is_favorite` and `is_sent` columns to books table (with auto-migration).
+- [x] Backend: `toggle-favorite` and `toggle-sent` endpoints + `GET /books` sorts favorites first.
+- [x] Frontend: **Favorite star (★)** toggle in Book List and Book Details — favorites display on top.
+- [x] Frontend: **Sent checkmark (✓)** toggle with visual indicator — filterable in Book List (All/Sent/Not sent).
+
+### DOCX Output
+- [x] Author line (`Tác giả: **[name]**`) added after book title, italic with bold author name.
+
+### Bug Fixes
+- [x] `downloaded_chapters` count now cumulative (pre-existing + session) instead of session-only.
+- [x] Progress bar total now shows **remaining chapters in current session**, not total book chapters.
+- [x] Progress text reads `"chapter X of Y in this session"` for clarity.
+
+### UI Polish
+- [x] Book List: action buttons replaced with icons (📋 ⬇ ⏳) to save column space.
+- [x] Book List: title and author columns truncated with full text on hover (`title` attribute).
+- [x] Fixed column widths with `w-*` classes for a tighter, consistent layout.
+- [x] Sent filter dropdown (All / Sent / Not sent) in Book List filter bar.
+
+### Planned (v1.2)
+- [ ] **Google Profile Login** — launch visible Chrome with user's profile for interactive Google OAuth login. Hybrid auto-detect + manual Stop button. Full plan at `.opencode/plans/profile-login-implementation.md`.
+
+---
+
 # Version 2 — Multi-source & Multi-profile
 
 ## Goal

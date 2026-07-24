@@ -89,6 +89,8 @@ class NovelDatabase:
             "ALTER TABLE books ADD COLUMN last_update_date TEXT",
             "CREATE INDEX IF NOT EXISTS idx_books_author ON books(author)",
             "CREATE INDEX IF NOT EXISTS idx_books_web_status ON books(book_web_status)",
+            "ALTER TABLE books ADD COLUMN is_favorite INTEGER DEFAULT 0",
+            "ALTER TABLE books ADD COLUMN is_sent INTEGER DEFAULT 0",
         ]
         for sql in migrations:
             try:
@@ -191,7 +193,8 @@ class NovelDatabase:
     def update_book_info(self, book_id: int, **kwargs):
         """Update metadata fields on a book (author, web_status, etc.)."""
         allowed = {'author', 'book_web_status', 'last_chapter_url',
-                   'last_chapter_title', 'last_update_date', 'total_chapters'}
+                   'last_chapter_title', 'last_update_date', 'total_chapters',
+                   'is_favorite', 'is_sent'}
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not updates:
             return
