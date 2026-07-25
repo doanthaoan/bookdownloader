@@ -61,8 +61,17 @@ Add user-facing enhancements to the book list, DOCX output, and settings UI, plu
 - [x] Frontend: **Favorite star (★)** toggle in Book List and Book Details — favorites display on top.
 - [x] Frontend: **Sent checkmark (✓)** toggle with visual indicator — filterable in Book List (All/Sent/Not sent).
 
+### Book Cover & Description
+- [x] Added `cover_image_url` and `short_description` columns to books table (with auto-migration).
+- [x] Extractor now scrapes cover image URL from `div.cover-wrapper img` and short description from `div.book-desc-detail`.
+- [x] Cover image downloaded to book directory on extraction, served via `GET /api/books/{id}/cover`.
+- [x] Book List: small cover thumbnail before title.
+- [x] Book Details: larger cover image on the left, short description in an accordion below.
+- [x] DOCX: cover image added to first page (centered, 3.5in wide).
+
 ### DOCX Output
 - [x] Author line (`Tác giả: **[name]**`) added after book title, italic with bold author name.
+- [x] Cover image added to first page of DOCX (centered, below author line).
 
 ### Bug Fixes
 - [x] `downloaded_chapters` count now cumulative (pre-existing + session) instead of session-only.

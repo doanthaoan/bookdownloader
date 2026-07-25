@@ -10,6 +10,7 @@ const BookDetails = ({ bookId, onBack }) => {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(null);
   const [redownloadDocxExists, setRedownloadDocxExists] = useState(false);
+  const [tags, setTags] = useState([]);
   const [maxChapters, setMaxChapters] = useState('');
   const pollingRef = useRef(null);
 
@@ -23,15 +24,17 @@ const BookDetails = ({ bookId, onBack }) => {
 
   const fetchData = async () => {
     try {
-      const [bookRes, chaptersRes, progressRes, rdInfoRes] = await Promise.all([
+      const [bookRes, chaptersRes, progressRes, rdInfoRes, tagsRes] = await Promise.all([
         bookApi.getOne(bookId),
         bookApi.getChapters(bookId),
         bookApi.getProgress(bookId),
         bookApi.redownloadDocxInfo(bookId).catch(() => ({ data: { exists: false } })),
+        bookApi.bookTags(bookId).catch(() => ({ data: { tags: [] } })),
       ]);
       setBook(bookRes.data);
       setChapters(chaptersRes.data);
       setRedownloadDocxExists(rdInfoRes.data.exists);
+      setTags(tagsRes.data.tags);
       const p = progressRes.data;
       setProgress(p);
       if (p.active) {
@@ -131,6 +134,17 @@ const BookDetails = ({ bookId, onBack }) => {
     }
   };
 
+  const handleRefreshInfo = async () => {
+    if (!confirm('Re-scrape book metadata (cover, description, author, status) from the web?')) return;
+    try {
+      const res = await bookApi.refreshInfo(bookId);
+      alert('Book info refreshed: ' + res.data.updated_fields.join(', '));
+      fetchData();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
   const handleUpdateFull = async () => {
     if (!confirm('Check for updates, extract new chapters, and download them? This may take a while.')) return;
     try {
@@ -172,10 +186,19 @@ const BookDetails = ({ bookId, onBack }) => {
       </div>
 
       <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <div className="flex flex-col lg:flex-row lg:justify-between lg:items-start gap-4">
-          <div className="flex-1">
+        <div className="flex flex-col lg:flex-row gap-6">
+          {/* Cover image */}
+          <div className="flex-shrink-0">
+            <img src={bookApi.coverUrl(bookId)}
+              className="w-32 h-44 object-cover rounded-lg shadow-md"
+              alt=""
+              onError={e => { e.target.style.display = 'none' }} />
+          </div>
+
+          {/* Book info */}
+          <div className="flex-1 min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">{book.title}</h1>
-            <div className="flex flex-wrap gap-4 mt-2 text-sm text-gray-500">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-sm text-gray-500">
               <span>ID: {book.id}</span>
               {book.stt && <span>STT: {book.stt}</span>}
               {book.author && <span>Tác giả: <strong>{book.author}</strong></span>}
@@ -191,13 +214,37 @@ const BookDetails = ({ bookId, onBack }) => {
               )}
               {failedChapters.length > 0 && <span className="text-red-500">{failedChapters.length} failed</span>}
             </div>
+            {tags.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {tags.map(tag => (
+                  <a key={tag} href={`/?tag=${encodeURIComponent(tag)}`}
+                    className="inline-block px-2 py-0.5 text-xs bg-sky-100 text-sky-700 rounded-full hover:bg-sky-200 transition">
+                    {tag}
+                  </a>
+                ))}
+              </div>
+            )}
             {book.book_url && (
               <a href={book.book_url} target="_blank" rel="noreferrer" className="inline-block mt-1 text-sm text-blue-500 hover:underline">
                 {book.book_url}
               </a>
             )}
+
+            {/* Short description accordion */}
+            {book.short_description && (
+              <details className="mt-3 group">
+                <summary className="text-sm text-gray-500 cursor-pointer hover:text-gray-700 select-none">
+                  Summary <span className="text-xs text-gray-400 group-open:hidden">(click to expand)</span>
+                </summary>
+                <p className="mt-2 text-sm text-gray-600 leading-relaxed whitespace-pre-line">
+                  {book.short_description}
+                </p>
+              </details>
+            )}
           </div>
-          <div className="flex flex-col items-end gap-2">
+
+          {/* Status badges */}
+          <div className="flex flex-col items-end gap-2 flex-shrink-0">
             <span className={`inline-block px-3 py-1 rounded-full text-sm font-semibold ${bookStatusColors[book.download_status] || 'bg-gray-100 text-gray-800'}`}>
               {book.download_status.replace(/_/g, ' ')}
             </span>
@@ -275,10 +322,16 @@ const BookDetails = ({ bookId, onBack }) => {
             </button>
           )}
           {book.book_url && (
-            <button onClick={handleUpdateFull}
-              className="bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded text-sm font-medium transition">
-              Update & Download
-            </button>
+            <>
+              <button onClick={handleUpdateFull}
+                className="bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+                Update & Download
+              </button>
+              <button onClick={handleRefreshInfo}
+                className="bg-cyan-600 hover:bg-cyan-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+                Refresh Info
+              </button>
+            </>
           )}
         </div>
       </div>

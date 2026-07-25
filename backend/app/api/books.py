@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Body
+from fastapi.responses import FileResponse, RedirectResponse
 from typing import List, Dict, Optional
 import os
 import sqlite3
@@ -14,7 +14,7 @@ db = get_database()
 
 @router.get("/")
 async def get_all_books(search: str = None, status: str = None, author: str = None,
-                         book_web_status: str = None, sent: int = None,
+                         book_web_status: str = None, sent: int = None, tag: str = None,
                          page: int = 1, per_page: int = 50):
     """Fetch all books with optional search, status filter, author, book_web_status, sent, and pagination."""
     conn = db._get_connection()
@@ -38,6 +38,9 @@ async def get_all_books(search: str = None, status: str = None, author: str = No
     if sent is not None:
         conditions.append("is_sent = ?")
         params.append(sent)
+    if tag:
+        conditions.append("id IN (SELECT book_id FROM book_tags bt JOIN tags t ON t.id = bt.tag_id WHERE t.name = ?)")
+        params.append(tag)
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -52,13 +55,36 @@ async def get_all_books(search: str = None, status: str = None, author: str = No
         params + [per_page, offset]
     ).fetchall()
 
+    books = [dict(r) for r in rows]
+
+    # Batch-load tags for all returned books
+    if books:
+        book_ids = [b['id'] for b in books]
+        placeholders = ','.join('?' * len(book_ids))
+        tag_rows = conn.execute(f"""
+            SELECT bt.book_id, t.name FROM book_tags bt
+            JOIN tags t ON t.id = bt.tag_id
+            WHERE bt.book_id IN ({placeholders})
+            ORDER BY t.name
+        """, book_ids).fetchall()
+        tags_by_book = {}
+        for tr in tag_rows:
+            tags_by_book.setdefault(tr['book_id'], []).append(tr['name'])
+        for b in books:
+            b['tags'] = tags_by_book.get(b['id'], [])
+
     return {
         "total": total,
         "page": page,
         "per_page": per_page,
         "total_pages": max(1, (total + per_page - 1) // per_page),
-        "books": [dict(r) for r in rows],
+        "books": books,
     }
+
+@router.get("/tags")
+async def list_all_tags():
+    """List all tags with book counts."""
+    return db.get_all_tags()
 
 @router.get("/{book_id}")
 async def get_book(book_id: int):
@@ -254,6 +280,87 @@ async def get_docx_info(book_id: int):
         "size": file_path.stat().st_size if file_path.exists() else 0,
     }
 
+@router.get("/{book_id}/cover")
+async def get_cover_image(book_id: int):
+    """Serve the cover image for a book.
+    
+    Searches for a local file matching {book_id}_{seo_title_basic}.{ext}
+    in the book directory. Falls back to redirecting to the remote URL
+    if stored. Returns 404 only if nothing exists.
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    base_dir = Path(__file__).parent.parent.parent
+    save_dir = base_dir / (db.get_setting('book_path') or TRUYENWIKI['book_path'])
+
+    # Try local file with common extensions
+    basename = f"{book_id}_{book['seo_title_basic']}"
+    for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+        local_file = save_dir / f"{basename}{ext}"
+        if local_file.exists():
+            media_type = "image/jpeg" if local_file.suffix.lower() in ('.jpg', '.jpeg') else "image/png"
+            return FileResponse(path=str(local_file), media_type=media_type)
+
+    # No local file — redirect to remote URL if stored
+    if book.get('cover_image_url'):
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=book['cover_image_url'])
+
+    raise HTTPException(status_code=404, detail="No cover image available for this book")
+
+@router.post("/{book_id}/refresh-info")
+async def refresh_book_info(book_id: int):
+    """Re-scrape book metadata (cover image URL, description, author, etc.)
+    from the web and update the local DB. Does NOT re-extract chapters.
+    Useful for backfilling cover_image_url / short_description on books
+    that were extracted before those columns existed.
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if not book.get('book_url'):
+        raise HTTPException(status_code=400, detail="Book has no URL to scrape from")
+
+    from app.services.extractor import ChapterListExtractor
+    from app.services.extractor import download_cover_image
+
+    extractor = ChapterListExtractor()
+    try:
+        info = extractor.scrape_book_info(book['book_url'])
+        if not info:
+            raise HTTPException(status_code=500, detail="Failed to scrape book info")
+        db.update_book_info(book_id, **info)
+        # Save tags
+        if info.get('tags'):
+            db.set_book_tags(book_id, info['tags'])
+        # Download cover image if we got a URL
+        if info.get('cover_image_url'):
+            save_dir = db.get_setting('book_path') or TRUYENWIKI['book_path']
+            download_cover_image(book_id, book['seo_title_basic'], info['cover_image_url'], save_dir)
+        return {
+            "message": "Book info refreshed",
+            "updated_fields": list(info.keys()),
+        }
+    finally:
+        extractor.close()
+
+@router.get("/{book_id}/tags")
+async def get_book_tags(book_id: int):
+    """Get tags for a specific book."""
+    if not db.get_book(book_id):
+        raise HTTPException(status_code=404, detail="Book not found")
+    return {"tags": db.get_book_tags(book_id)}
+
+@router.put("/{book_id}/tags")
+async def update_book_tags(book_id: int, tags: List[str] = Body(...)):
+    """Replace all tags for a book."""
+    if not db.get_book(book_id):
+        raise HTTPException(status_code=404, detail="Book not found")
+    db.set_book_tags(book_id, tags)
+    return {"tags": db.get_book_tags(book_id), "message": "Tags updated"}
+
 @router.post("/{book_id}/toggle-favorite")
 async def toggle_favorite(book_id: int):
     """Toggle the favorite status of a book."""
@@ -314,6 +421,8 @@ async def check_for_updates():
             if new_url and new_url != old_url:
                 # Update book info in DB
                 db.update_book_info(book['id'], **info)
+                if info.get('tags'):
+                    db.set_book_tags(book['id'], info['tags'])
                 updated.append({
                     "id": book['id'],
                     "title": book['title'],
@@ -350,6 +459,8 @@ async def update_book_full(book_id: int, background_tasks: BackgroundTasks, max_
                 return
 
             db.update_book_info(book_id, **info)
+            if info.get('tags'):
+                db.set_book_tags(book_id, info['tags'])
 
             # Step 2: Check if their latest chapter is already in OUR chapters table
             their_latest = info['last_chapter_url']
@@ -420,6 +531,8 @@ async def continue_extract(book_id: int, background_tasks: BackgroundTasks):
             info = extractor.scrape_book_info(book['book_url'])
             if info:
                 db.update_book_info(book_id, **info)
+                if info.get('tags'):
+                    db.set_book_tags(book_id, info['tags'])
 
             # Extract fresh chapter list
             chapters = extractor.extract_chapter_list(book['book_url'])

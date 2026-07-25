@@ -11,6 +11,8 @@ const BookList = ({ onViewBook }) => {
   const [authorFilter, setAuthorFilter] = useState('');
   const [webStatusFilter, setWebStatusFilter] = useState('');
   const [sentFilter, setSentFilter] = useState('');
+  const [tagFilter, setTagFilter] = useState('');
+  const [allTags, setAllTags] = useState([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
@@ -24,6 +26,7 @@ const BookList = ({ onViewBook }) => {
       if (authorFilter) params.author = authorFilter;
       if (webStatusFilter) params.book_web_status = webStatusFilter;
       if (sentFilter !== '') params.sent = sentFilter === 'sent' ? 1 : 0;
+      if (tagFilter) params.tag = tagFilter;
       const res = await bookApi.getAll(params);
       const data = res.data;
       setBooks(data.books || []);
@@ -37,8 +40,12 @@ const BookList = ({ onViewBook }) => {
   };
 
   useEffect(() => {
+    bookApi.allTags().then(r => setAllTags(r.data || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     fetchBooks();
-  }, [page, statusFilter, authorFilter, webStatusFilter, sentFilter]);
+  }, [page, statusFilter, authorFilter, webStatusFilter, sentFilter, tagFilter]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -145,6 +152,19 @@ const BookList = ({ onViewBook }) => {
               <option value="not_sent">Not sent</option>
             </select>
           </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Tag</label>
+            <select
+              className="border rounded px-3 py-2 text-sm"
+              value={tagFilter}
+              onChange={e => { setTagFilter(e.target.value); setPage(1); }}
+            >
+              <option value="">All tags</option>
+              {allTags.map(t => (
+                <option key={t.id} value={t.name}>{t.name} ({t.book_count})</option>
+              ))}
+            </select>
+          </div>
           <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm">
             Search
           </button>
@@ -160,6 +180,7 @@ const BookList = ({ onViewBook }) => {
               <th className="p-2 w-14">ID</th>  
               <th className="p-2">Title</th>
               <th className="p-2 w-28">Author</th>
+              <th className="p-2 w-32">Tags</th>
               <th className="p-2 w-24">Web</th>
               <th className="p-2 w-20">Ch.</th>
               <th className="p-2 w-28">Status</th>
@@ -168,9 +189,9 @@ const BookList = ({ onViewBook }) => {
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={9} className="px-6 py-12 text-center text-gray-400">Loading...</td></tr>
+              <tr><td colSpan={10} className="px-6 py-12 text-center text-gray-400">Loading...</td></tr>
             ) : books.length === 0 ? (
-              <tr><td colSpan={9} className="px-6 py-12 text-center text-gray-400">No books found.</td></tr>
+              <tr><td colSpan={10} className="px-6 py-12 text-center text-gray-400">No books found.</td></tr>
             ) : (
               books.map(book => (
                 <tr key={book.id} className="hover:bg-gray-50 transition">
@@ -190,13 +211,34 @@ const BookList = ({ onViewBook }) => {
                   </td>
                   <td className="p-2 text-sm text-gray-500">{book.id}</td>  
                   <td className="p-2 max-w-0">
-                    <button onClick={() => onViewBook(book.id)}
-                      className="font-medium text-gray-900 hover:text-blue-600 transition truncate block w-full text-left"
-                      title={book.title}>
-                      {book.title}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <img src={bookApi.coverUrl(book.id)}
+                        className="w-8 h-10 object-cover rounded flex-shrink-0"
+                        alt=""
+                        onError={e => { e.target.style.display = 'none' }} />
+                      <button onClick={() => onViewBook(book.id)}
+                        className="font-medium text-gray-900 hover:text-blue-600 transition truncate block text-left"
+                        title={book.title}>
+                        {book.title}
+                      </button>
+                    </div>
                   </td>
                   <td className="p-2 text-sm text-gray-500 truncate" title={book.author || ''}>{book.author || '—'}</td>
+                  <td className="p-2">
+                    {book.tags && book.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-0.5 max-h-10 overflow-hidden">
+                        {book.tags.slice(0, 3).map(t => (
+                          <a key={t} href={`/?tag=${encodeURIComponent(t)}`}
+                            className="inline-block px-1.5 py-0.5 text-xs bg-sky-50 text-sky-600 rounded hover:bg-sky-100 transition whitespace-nowrap">
+                            {t}
+                          </a>
+                        ))}
+                        {book.tags.length > 3 && (
+                          <span className="text-xs text-gray-400">+{book.tags.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+                  </td>
                   <td className="p-2">
                     {book.book_web_status && (
                       <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${

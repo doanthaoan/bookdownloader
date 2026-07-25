@@ -16,6 +16,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 from docx import Document
+from docx.shared import Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from colorama import Fore, init
 from app.config import TRUYENWIKI, get_cookies, get_user_agent
 from app.database import get_database
@@ -133,9 +135,17 @@ class TruyenWikiDownloader:
             fresh = True
 
         if fresh:
-            # Remove the default empty paragraph and add book title
+            # Remove the default empty paragraph
             for p in list(doc.paragraphs):
                 p._element.getparent().remove(p._element)
+            # Add cover image first (if available)
+            cover_path = self._find_cover_image()
+            if cover_path:
+                img_p = doc.add_paragraph()
+                img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                run = img_p.add_run()
+                run.add_picture(str(cover_path), width=Inches(3.5))
+            # Then title and author
             doc.add_heading(self.book['title'], level=0)
             if self.book.get('author'):
                 p = doc.add_paragraph()
@@ -147,6 +157,16 @@ class TruyenWikiDownloader:
                 run_author.italic = True
 
         return doc
+
+    def _find_cover_image(self) -> str | None:
+        """Find the cover image file on disk matching this book."""
+        base_dir = os.path.dirname(self.output_docx)
+        basename = os.path.splitext(os.path.basename(self.output_docx))[0]
+        for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+            path = os.path.join(base_dir, f"{basename}{ext}")
+            if os.path.exists(path):
+                return path
+        return None
     
     def _setup_selenium(self):
         """Setup Selenium WebDriver with appropriate options"""

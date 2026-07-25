@@ -91,6 +91,8 @@ class NovelDatabase:
             "CREATE INDEX IF NOT EXISTS idx_books_web_status ON books(book_web_status)",
             "ALTER TABLE books ADD COLUMN is_favorite INTEGER DEFAULT 0",
             "ALTER TABLE books ADD COLUMN is_sent INTEGER DEFAULT 0",
+            "ALTER TABLE books ADD COLUMN cover_image_url TEXT",
+            "ALTER TABLE books ADD COLUMN short_description TEXT",
         ]
         for sql in migrations:
             try:
@@ -120,6 +122,27 @@ class NovelDatabase:
                 relative += '?' + parsed.query
             conn.execute("UPDATE books SET last_chapter_url = ? WHERE id = ?", (relative, row['id']))
             logger.info(f"Normalized book last_chapter_url (id={row['id']})")
+
+        # Create tags and book_tags tables (idempotent)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tags (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS book_tags (
+                    book_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    PRIMARY KEY (book_id, tag_id),
+                    FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+                    FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+                )
+            """)
+        except Exception as e:
+            logger.debug(f"tags/book_tags creation skipped: {e}")
 
         # Create text_cleaning_rules table (idempotent)
         try:
@@ -194,7 +217,7 @@ class NovelDatabase:
         """Update metadata fields on a book (author, web_status, etc.)."""
         allowed = {'author', 'book_web_status', 'last_chapter_url',
                    'last_chapter_title', 'last_update_date', 'total_chapters',
-                   'is_favorite', 'is_sent'}
+                   'is_favorite', 'is_sent', 'cover_image_url', 'short_description'}
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not updates:
             return
@@ -371,6 +394,63 @@ class NovelDatabase:
         """, (key, value))
         conn.commit()
     
+    # === TAG OPERATIONS ===
+
+    def add_tag(self, name: str) -> int:
+        """Get or create a tag by name, return its id."""
+        conn = self._get_connection()
+        row = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+        if row:
+            return row[0]
+        cursor = conn.execute("INSERT INTO tags (name) VALUES (?)", (name,))
+        conn.commit()
+        return cursor.lastrowid
+
+    def set_book_tags(self, book_id: int, tag_names: List[str]):
+        """Replace all tags for a book with the given list of tag names."""
+        conn = self._get_connection()
+        conn.execute("DELETE FROM book_tags WHERE book_id = ?", (book_id,))
+        for name in tag_names:
+            name = name.strip()
+            if name:
+                tag_id = self.add_tag(name)
+                conn.execute("INSERT OR IGNORE INTO book_tags (book_id, tag_id) VALUES (?, ?)", (book_id, tag_id))
+        conn.commit()
+
+    def get_book_tags(self, book_id: int) -> list[str]:
+        """Get all tag names for a book."""
+        conn = self._get_connection()
+        rows = conn.execute("""
+            SELECT t.name FROM tags t
+            JOIN book_tags bt ON bt.tag_id = t.id
+            WHERE bt.book_id = ?
+            ORDER BY t.name
+        """, (book_id,)).fetchall()
+        return [r[0] for r in rows]
+
+    def get_all_tags(self) -> list[dict]:
+        """List all tags with book count."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT t.id, t.name, COUNT(bt.book_id) as book_count
+            FROM tags t
+            LEFT JOIN book_tags bt ON bt.tag_id = t.id
+            GROUP BY t.id
+            ORDER BY t.name
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_books_by_tag(self, tag_name: str) -> list[int]:
+        """Get book IDs that have a given tag."""
+        conn = self._get_connection()
+        rows = conn.execute("""
+            SELECT bt.book_id FROM book_tags bt
+            JOIN tags t ON t.id = bt.tag_id
+            WHERE t.name = ?
+        """, (tag_name,)).fetchall()
+        return [r[0] for r in rows]
+
     # === TEXT CLEANING RULES OPERATIONS ===
 
     def get_text_cleaning_rules(self, enabled_only: bool = False) -> List[Dict]:

@@ -20,11 +20,16 @@ export const bookApi = {
   redownloadDocxInfo: (id) => api.get(`/books/${id}/redownload-docx-info`),
   toggleFavorite: (id) => api.post(`/books/${id}/toggle-favorite`),
   toggleSent: (id) => api.post(`/books/${id}/toggle-sent`),
+  coverUrl: (id) => `${BASE_URL}/api/books/${id}/cover`,
   docxUrl: (id) => `${BASE_URL}/api/books/${id}/docx`,
   redownloadDocxUrl: (id) => `${BASE_URL}/api/books/${id}/redownload-docx`,
   checkUpdates: () => api.get('/books/updates/check'),
+  refreshInfo: (id) => api.post(`/books/${id}/refresh-info`),
   continueExtract: (id) => api.post(`/books/${id}/continue-extract`),
   updateFull: (id, params = {}) => api.post(`/books/${id}/update-full`, null, { params }),
+  bookTags: (id) => api.get(`/books/${id}/tags`),
+  updateBookTags: (id, tags) => api.put(`/books/${id}/tags`, tags),
+  allTags: () => api.get('/books/tags'),
 };
 
 export const settingsApi = {

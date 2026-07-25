@@ -26,8 +26,28 @@ from urllib.parse import urlparse
 # if current_dir not in sys.path:
 #     sys.path.insert(0, current_dir)
     
+import requests
 from app.database import get_database
 from app.config import TRUYENWIKI, get_cookies, get_user_agent
+
+
+def download_cover_image(book_id: int, seo_title_basic: str, image_url: str, save_dir: str) -> str | None:
+    """Download cover image and return the local filename, or None on failure."""
+    if not image_url:
+        return None
+    ext = os.path.splitext(image_url.split('?')[0])[1] or '.jpg'
+    filename = f"{book_id}_{seo_title_basic}{ext}"
+    filepath = os.path.join(save_dir, filename)
+    try:
+        r = requests.get(image_url, timeout=15)
+        r.raise_for_status()
+        with open(filepath, 'wb') as f:
+            f.write(r.content)
+        print(f"🖼️ Cover image saved: {filepath}")
+        return filename
+    except Exception as e:
+        print(f"⚠️ Failed to download cover image: {e}")
+        return None
 
 
 def normalize_url(url: str) -> str:
@@ -87,8 +107,9 @@ class ChapterListExtractor:
     
     def scrape_book_info(self, book_url: str) -> dict:
         """
-        Scrape book metadata from the book info page (cover-info section).
-        Extracts author, web status, latest chapter, last update date.
+        Scrape book metadata from the book info page.
+        Extracts author, web status, latest chapter, last update date,
+        cover image URL, and short description.
         """
         if not self.driver:
             self.driver = self._setup_selenium()
@@ -100,6 +121,32 @@ class ChapterListExtractor:
             time.sleep(3)
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
 
+            # --- Cover image ---
+            img_tag = soup.select_one('div.cover-wrapper img')
+            if img_tag and img_tag.get('src'):
+                src = img_tag['src']
+                if src.startswith('/'):
+                    src = TRUYENWIKI['book_domain'] + src
+                info['cover_image_url'] = src
+
+            # --- Tags (Thể loại) ---
+            book_desc = soup.find('div', class_='book-desc')
+            if book_desc:
+                first_p = book_desc.find('p')
+                if first_p and first_p.get_text(strip=True).startswith('Thể loại:'):
+                    tags = [a.get_text(strip=True) for a in first_p.find_all('a') if a.get_text(strip=True)]
+                    if tags:
+                        info['tags'] = tags
+
+            # --- Short description ---
+            desc_tag = soup.find('div', class_='book-desc-detail')
+            if desc_tag:
+                raw = desc_tag.get_text('\n')
+                info['short_description'] = '\n\n'.join(
+                    line.strip() for line in raw.split('\n') if line.strip()
+                )
+
+            # --- Cover-info fields ---
             cover = soup.find('div', class_='cover-info')
             if not cover:
                 print("⚠️ Could not find cover-info section")
@@ -450,6 +497,16 @@ class ChapterListExtractor:
                 # Update book info from scraped data
                 if book_info:
                     self.db.update_book_info(book_id, **book_info)
+                # Save tags
+                if book_info.get('tags'):
+                    self.db.set_book_tags(book_id, book_info['tags'])
+                # Download cover image
+                if book_info.get('cover_image_url'):
+                    save_dir = self.db.get_setting('book_path') or TRUYENWIKI['book_path']
+                    filename = download_cover_image(
+                        book_id, book['seo_title_basic'],
+                        book_info['cover_image_url'], save_dir
+                    )
             else:
                 # Add new book to database with scraped info
                 book_id = self.db.add_book(
@@ -461,6 +518,18 @@ class ChapterListExtractor:
                     last_chapter_title=book_info.get('last_chapter_title'),
                     last_update_date=book_info.get('last_update_date'),
                 )
+                # Save tags for new book
+                if book_info.get('tags'):
+                    self.db.set_book_tags(book_id, book_info['tags'])
+                # Download cover image for new book
+                if book_info.get('cover_image_url'):
+                    new_book = self.db.get_book(book_id)
+                    if new_book:
+                        save_dir = self.db.get_setting('book_path') or TRUYENWIKI['book_path']
+                        download_cover_image(
+                            book_id, new_book['seo_title_basic'],
+                            book_info['cover_image_url'], save_dir
+                        )
                 print(f"📚 Added new book to DB: {book_title} (ID: {book_id})")
             
             # Save chapters to database
