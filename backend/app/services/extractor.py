@@ -517,6 +517,8 @@ class ChapterListExtractor:
                     last_chapter_url=book_info.get('last_chapter_url'),
                     last_chapter_title=book_info.get('last_chapter_title'),
                     last_update_date=book_info.get('last_update_date'),
+                    cover_image_url=book_info.get('cover_image_url'),
+                    short_description=book_info.get('short_description')
                 )
                 # Save tags for new book
                 if book_info.get('tags'):

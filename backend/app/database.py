@@ -187,14 +187,16 @@ class NovelDatabase:
                  book_web_status: str = None,
                  last_chapter_url: str = None,
                  last_chapter_title: str = None,
-                 last_update_date: str = None) -> int:
+                 last_update_date: str = None,
+                 cover_image_url: str = None,
+                 short_description: str = None) -> int:
         """
         Add a new book to the database
         
         Returns:
             ID of the newly inserted book
         """
-        from app.utils import clean_title, format_stt
+        from app.utils import clean_title
         
         seo_basic = clean_title(title)
         seo_full = f"{seo_basic}.html"
@@ -203,10 +205,10 @@ class NovelDatabase:
         cursor = conn.execute("""
             INSERT INTO books (stt, title, seo_title_basic, seo_title_full, 
                              book_url, notes, author, book_web_status,
-                             last_chapter_url, last_chapter_title, last_update_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             last_chapter_url, last_chapter_title, last_update_date, cover_image_url, short_description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (stt, title, seo_basic, seo_full, book_url, notes,
-              author, book_web_status, last_chapter_url, last_chapter_title, last_update_date))
+              author, book_web_status, last_chapter_url, last_chapter_title, last_update_date, cover_image_url, short_description))
         
         conn.commit()
         book_id = cursor.lastrowid
