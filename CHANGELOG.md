@@ -4,17 +4,29 @@ All notable changes to this project are documented here.
 
 ## Versioning scheme
 
-| Segment | Meaning | Example |
-|---|---|---|
-| **Major** | Architecture/API change (multi-source, DB overhaul) | v2.0 |
-| **Minor** | New features, backward-compatible | v1.1, v1.2 |
-| **Patch** | Bug fixes, UI polish, small tweaks | v1.0.1 |
+| Segment         | Meaning                                             | Example    |
+| --------------- | --------------------------------------------------- | ---------- |
+| **Major** | Architecture/API change (multi-source, DB overhaul) | v2.0       |
+| **Minor** | New features, backward-compatible                   | v1.1, v1.2 |
+| **Patch** | Bug fixes, UI polish, small tweaks                  | v1.0.1     |
 
 ---
+
+## [1.1.1] — 2026-08-04
+
+### Fixed
+
+* Missing cover at first extraction
+* Missing description at first extraction
+
+### Changed
+
+* Remove old plan
 
 ## [1.1] — 2026-07-25
 
 ### Added
+
 - **Book Management**: `is_favorite` and `is_sent` columns, toggle endpoints, sort favorites first.
 - **Book List**: Favorite star (★), sent checkmark (✓) columns; Sent filter dropdown.
 - **Book Details**: Favorite and Sent toggle buttons in header.
@@ -33,6 +45,7 @@ All notable changes to this project are documented here.
 - **Refresh Info**: `POST /api/books/{id}/refresh-info` endpoint + button to backfill metadata and download cover image.
 
 ### Changed
+
 - Cookies come strictly from DB — removed `ENV_COOKIES` and `dotenv` dependency.
 - Book List action buttons replaced with icons (📋 ⬇ ⏳) to save space.
 - Title and author columns truncated with full text on hover.
@@ -43,6 +56,7 @@ All notable changes to this project are documented here.
 - **Book list response**: Includes `tags` array (batch-loaded) for each book.
 
 ### Fixed
+
 - `downloaded_chapters` count now cumulative (pre-existing + session), not session-only.
 - Progress `total` reflects remaining chapters in current session, not total book chapters.
 - Removed orphaned `SAVE_INTERVAL` module constant from `downloader.py`.
@@ -53,6 +67,7 @@ All notable changes to this project are documented here.
 - **JSX syntax**: Fixed unclosed template literal in BookList tag rendering.
 
 ### Planned (next)
+
 - Google Profile Login — visible Chrome with user profile for interactive Google OAuth.
   Full plan at `.opencode/plans/profile-login-implementation.md`.
 
@@ -61,12 +76,14 @@ All notable changes to this project are documented here.
 ## [1.0] — 2026-07-19 to 2026-07-21
 
 ### Infrastructure & Backend
+
 - FastAPI project with REST endpoints (Books, Chapters, Settings).
 - SQLite database with WAL mode + thread-local connections.
 - Selenium-based chapter extractor and DOCX downloader.
 - Background task support for long-running downloads.
 
 ### Frontend
+
 - React + Vite + Tailwind CSS.
 - Dashboard (book list, filters, pagination).
 - Book Details page (chapter list, download controls, progress).
@@ -74,6 +91,7 @@ All notable changes to this project are documented here.
 - Updates page, Continue Extract, Update & Download.
 
 ### Features
+
 - Cookie auto-fetcher (username/password → Selenium login → save cookies).
 - Real-time download progress with polling.
 - Re-download (failed chapters or all).
@@ -84,5 +102,6 @@ All notable changes to this project are documented here.
 - Search, filter, pagination on book list.
 
 ### Known Issues (at v1.0)
+
 - `downloaded_chapters` count session-only instead of cumulative _(fixed in v1.1)_.
 - Progress bar shows total book chapters instead of remaining _(fixed in v1.1)_.
