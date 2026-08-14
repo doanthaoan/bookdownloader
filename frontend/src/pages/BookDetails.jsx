@@ -288,20 +288,22 @@ const BookDetails = ({ bookId, onBack }) => {
             </button>
           ) : isCompleted ? (
             <>
-              <button onClick={handleRedownload} disabled={failedChapters.length === 0}
-                className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
-                Re-download ({failedChapters.length} failed)
-              </button>
               <button onClick={handleRedownloadAll}
                 className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded text-sm font-medium transition">
                 Re-download All
               </button>
             </>
           ) : (
-            <button onClick={handleDownload} disabled={totalChapters === 0}
-              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
-              Download All
-            </button>
+            <>
+              <button onClick={handleRedownload} disabled={failedChapters.length === 0}
+                className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
+                Re-download ({failedChapters.length} failed)
+              </button>
+              <button onClick={handleDownload} disabled={totalChapters === 0}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
+                Download All
+              </button>
+            </>
           )}
           {completedChapters > 0 && (
             <a href={bookApi.docxUrl(bookId)} target="_blank"

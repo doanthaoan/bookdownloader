@@ -488,7 +488,16 @@ class TruyenWikiDownloader:
             self.driver.quit()
 
         total_duration = time.time() - start_total
-        new_status = 'cancelled' if cancelled else ('completed' if fail_count == 0 else 'completed_with_errors')
+        # new_status = 'cancelled' if cancelled else ('completed' if fail_count == 0 else 'completed_with_errors')
+        remaining_pending = len([c for c in self.chapters if c['download_status'] == 'pending'])
+        if cancelled:
+            new_status = 'cancelled'
+        elif remaining_pending:
+            new_status = 'paused'          # still has pending chapters → don't claim complete
+        elif fail_count == 0:
+            new_status = 'completed'
+        else:
+            new_status = 'completed_with_errors'
         self.db.update_book_status(
             book_id=self.book_id, download_status=new_status,
             downloaded_chapters=len([c for c in self.chapters if c['download_status'] == 'completed'])

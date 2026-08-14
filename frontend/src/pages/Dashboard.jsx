@@ -1,27 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { bookApi } from '../api';
+import { bookApi, settingsApi } from '../api';
 import { bookStatusColors } from '../constants';
 import Layout from '../components/Layout';
 
 const Dashboard = ({ onViewBook }) => {
   const [books, setBooks] = useState([]);
+  const [siteConfig, setSiteConfig] = useState({});
   const [loading, setLoading] = useState(true);
 
   const fetchBooks = async () => {
-    try {
-      const res = await bookApi.getAll({ per_page: 1000 });
-      const data = res.data;
-      const books = data.books || data;
-      setBooks(books);
-    } catch (err) {
-      console.error('Failed to fetch books', err);
-    } finally {
-      setLoading(false);
-    }
+    const res = await bookApi.getAll({ per_page: 1000 });
+    setBooks(res.data.books || res.data);
+    // try {
+    //   const res = await bookApi.getAll({ per_page: 1000 });
+    //   setBooks(res.data.books || res.data);
+    // } catch (err) {
+    //   console.error('Failed to fetch books', err);
+    // } finally {
+    //   setLoading(false);
+    // }
   };
+  const fetchSiteConfig = async() => {
+    const res = await settingsApi.getSettings();
+    console.log('Fetched site config:', res.data.db_settings);
+    setSiteConfig( res.data.db_settings || res.data);
+  }
 
   useEffect(() => {
-    fetchBooks();
+    Promise.all([fetchBooks(), fetchSiteConfig()])
+      .catch(err => console.error('Failed to fetch data', err))
+      .finally(() => setLoading(false));
   }, []);
 
   const stats = {
@@ -53,7 +61,13 @@ const Dashboard = ({ onViewBook }) => {
           <p className="text-3xl font-bold mt-1 text-red-600">{stats.failed}</p>
         </div>
       </div>
-
+      <div className="bg-white rounded-lg shadow p-6 mb-8">
+        <h2 className="text-lg font-semibold mb-2">Site Configuration</h2>
+        <p className="text-gray-500 text-sm mb-4">Current site configuration for TruyenWiki.</p>
+        <p className="text-gray-700 text-sm mb-2"><strong>Domain:</strong> {siteConfig.filter(c => c.key === 'domain')[0]?.value || 'Not set'}</p>
+        <p className="text-gray-700 text-sm mb-2"><strong>Book Path:</strong> {siteConfig.filter(c => c.key === 'book_path')[0]?.value || 'Not set'}</p>
+        <p className="text-gray-700 text-sm mb-2"><strong>Logs Path:</strong> {siteConfig.filter(c => c.key === 'logs_path')[0]?.value || 'Not set'}</p>
+      </div>
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-lg font-semibold mb-2">Recent Books</h2>
         <p className="text-gray-500 text-sm mb-4">View all your books in the Book List page.</p>
