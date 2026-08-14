@@ -22,6 +22,7 @@ from colorama import Fore, init
 from app.config import TRUYENWIKI, get_cookies, get_user_agent
 from app.database import get_database
 from app.services.text_cleaner import TextCleaner
+from app.services.translator import apply_corrections
 
 # Initialize colorama
 init(autoreset=True)
@@ -216,6 +217,11 @@ class TruyenWikiDownloader:
         """
         # Build full URL
         chapter_url = chapter['chapter_url']
+        if chapter_url.startswith("translate://"):
+            raise ValueError(
+                "Translated chapter — cannot be downloaded from the web. "
+                "This book was created by the Translate tool; its DOCX is built by translation."
+            )
         full_url = chapter_url if chapter_url.startswith("http") else self.domain + chapter_url
         
         # Navigate to the chapter
@@ -239,7 +245,9 @@ class TruyenWikiDownloader:
         if not content_tag:
             raise Exception("Could not find content-body-wrapper after waiting.")
 
-        title_text = self.cleaner.clean(title_tag.get_text())
+        # Apply global Text Cleaning rules first, then this book's per-book corrections
+        corrections = self.db.get_book_corrections(self.book_id)
+        title_text = apply_corrections(self.cleaner.clean(title_tag.get_text()), corrections)
         
         # Save to HTML (Appended mode)
         # with open(self.output_html, 'a', encoding='utf-8') as html_file:
@@ -251,7 +259,8 @@ class TruyenWikiDownloader:
         # Add to DOCX object
         self.docx_doc.add_heading(title_text, level=1)
         for p in content_tag.find_all('p'):
-            self.docx_doc.add_paragraph(self.cleaner.clean(p.get_text()))
+            cleaned = self.cleaner.clean(p.get_text())
+            self.docx_doc.add_paragraph(apply_corrections(cleaned, corrections))
 
         return title_text, full_url
 

@@ -1,8 +1,10 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Body
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Body, UploadFile, File
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel
 from typing import List, Dict, Optional
 import os
 import sqlite3
+import shutil
 from pathlib import Path
 from app.database import get_database
 from app.services.extractor import ChapterListExtractor, extract_chapters_for_book
@@ -11,6 +13,14 @@ from app.config import TRUYENWIKI
 
 router = APIRouter()
 db = get_database()
+
+
+class UpdateBookInfoRequest(BaseModel):
+    title: Optional[str] = None
+    author: Optional[str] = None
+    short_description: Optional[str] = None
+    book_web_status: Optional[str] = None
+    cover_image_url: Optional[str] = None
 
 @router.get("/")
 async def get_all_books(search: str = None, status: str = None, author: str = None,
@@ -122,6 +132,8 @@ async def download_book_task(book_id: int, background_tasks: BackgroundTasks, ma
     book = db.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
+    if book.get('is_translated'):
+        raise HTTPException(status_code=400, detail="Translated book — content is produced by the Translate tool, not by web download.")
     
     def run_download():
         try:
@@ -380,6 +392,62 @@ async def toggle_sent(book_id: int):
     new_val = 0 if book.get('is_sent') else 1
     db.update_book_info(book_id, is_sent=new_val)
     return {"is_sent": new_val, "message": "Marked as sent" if new_val else "Marked as not sent"}
+
+@router.put("/{book_id}")
+async def update_book_info(book_id: int, req: UpdateBookInfoRequest):
+    """Update editable book metadata (title, author, summary, web status, cover URL)."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    updates = {}
+    if req.title is not None and req.title.strip():
+        if req.title.strip() != book.get('title'):
+            existing = db.get_book_by_title(req.title.strip())
+            if existing and existing['id'] != book_id:
+                raise HTTPException(status_code=400, detail="A book with this title already exists")
+            updates['title'] = req.title.strip()
+    if req.author is not None:
+        updates['author'] = req.author.strip() or None
+    if req.short_description is not None:
+        updates['short_description'] = req.short_description.strip() or None
+    if req.book_web_status is not None:
+        updates['book_web_status'] = req.book_web_status.strip() or None
+    if req.cover_image_url is not None:
+        updates['cover_image_url'] = req.cover_image_url.strip() or None
+
+    if updates:
+        db.update_book_info(book_id, **updates)
+    return {"message": "Book info updated", "updated_fields": list(updates.keys())}
+
+
+@router.post("/{book_id}/cover")
+async def upload_cover(book_id: int, file: UploadFile = File(...)):
+    """Upload a cover image for a book. Saved as {book_id}_{seo_title_basic}.{ext}
+    in the book directory so GET /{book_id}/cover serves it locally.
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
+        raise HTTPException(status_code=400, detail="Cover must be jpg/png/gif/webp")
+
+    save_dir = Path(__file__).parent.parent.parent / (db.get_setting('book_path') or TRUYENWIKI['book_path'])
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Remove existing cover with a different extension
+    basename = f"{book_id}_{book['seo_title_basic']}"
+    for old_ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
+        old = save_dir / f"{basename}{old_ext}"
+        if old.exists() and old.suffix.lower() != ext:
+            old.unlink()
+
+    dest = save_dir / f"{basename}{ext}"
+    with dest.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    return {"message": f"Cover saved as {dest.name}"}
 
 @router.delete("/{book_id}")
 async def delete_book(book_id: int):

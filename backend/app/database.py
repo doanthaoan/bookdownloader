@@ -93,6 +93,9 @@ class NovelDatabase:
             "ALTER TABLE books ADD COLUMN is_sent INTEGER DEFAULT 0",
             "ALTER TABLE books ADD COLUMN cover_image_url TEXT",
             "ALTER TABLE books ADD COLUMN short_description TEXT",
+            "ALTER TABLE books ADD COLUMN source_file TEXT",
+            "ALTER TABLE books ADD COLUMN is_translated INTEGER DEFAULT 0",
+            "ALTER TABLE chapters ADD COLUMN chapter_content TEXT",
         ]
         for sql in migrations:
             try:
@@ -122,6 +125,23 @@ class NovelDatabase:
                 relative += '?' + parsed.query
             conn.execute("UPDATE books SET last_chapter_url = ? WHERE id = ?", (relative, row['id']))
             logger.info(f"Normalized book last_chapter_url (id={row['id']})")
+
+        # Create book_corrections table (idempotent)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS book_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    book_id INTEGER NOT NULL,
+                    find_text TEXT NOT NULL,
+                    replace_text TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+                )
+            """)
+        except Exception as e:
+            logger.debug(f"book_corrections creation skipped: {e}")
 
         # Create tags and book_tags tables (idempotent)
         try:
@@ -219,7 +239,8 @@ class NovelDatabase:
         """Update metadata fields on a book (author, web_status, etc.)."""
         allowed = {'author', 'book_web_status', 'last_chapter_url',
                    'last_chapter_title', 'last_update_date', 'total_chapters',
-                   'is_favorite', 'is_sent', 'cover_image_url', 'short_description'}
+                   'is_favorite', 'is_sent', 'cover_image_url', 'short_description',
+                   'source_file', 'is_translated', 'notes'}
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not updates:
             return
@@ -302,6 +323,57 @@ class NovelDatabase:
         logger.debug(f"Added chapter: {chapter_title} (ID: {chapter_id})")
         return chapter_id
     
+    def add_chapter_with_content(self, book_id: int, chapter_order: int,
+                             chapter_title: str, chapter_url: str,
+                             chapter_content: str = None) -> int:
+        """
+        Add a chapter to a book, optionally storing raw/translated content.
+        
+        Returns:
+            ID of the newly inserted chapter
+        """
+        conn = self._get_connection()
+        cursor = conn.execute("""
+            INSERT INTO chapters (book_id, chapter_order, chapter_title, chapter_url, chapter_content)
+            VALUES (?, ?, ?, ?, ?)
+        """, (book_id, chapter_order, chapter_title, chapter_url, chapter_content))
+        conn.commit()
+        chapter_id = cursor.lastrowid
+        logger.debug(f"Added chapter: {chapter_title} (ID: {chapter_id})")
+        return chapter_id
+
+    def update_chapter_content(self, chapter_id: int, chapter_content: str):
+        """Store translated content for a chapter."""
+        conn = self._get_connection()
+        conn.execute("UPDATE chapters SET chapter_content = ? WHERE id = ?", (chapter_content, chapter_id))
+        conn.commit()
+
+    def get_book_corrections(self, book_id: int) -> List[Dict]:
+        """Get all corrections for a book, ordered by sort_order."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT * FROM book_corrections WHERE book_id = ?
+            ORDER BY sort_order, id
+        """, (book_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_book_corrections(self, book_id: int, corrections: List[Dict]):
+        """Replace all corrections for a book.
+        Each item: {'find_text': str, 'replace_text': str, 'enabled': bool}
+        """
+        conn = self._get_connection()
+        conn.execute("DELETE FROM book_corrections WHERE book_id = ?", (book_id,))
+        for i, c in enumerate(corrections):
+            find_text = (c.get('find_text') or '').strip()
+            if not find_text:
+                continue
+            conn.execute("""
+                INSERT INTO book_corrections (book_id, find_text, replace_text, enabled, sort_order)
+                VALUES (?, ?, ?, ?, ?)
+            """, (book_id, find_text, c.get('replace_text') or '', 1 if c.get('enabled', True) else 0, i))
+        conn.commit()
+
     def get_chapters_by_book(self, book_id: int, 
                             status: str = None) -> List[Dict]:
         """Get all chapters for a book, optionally filtered by status"""
@@ -374,6 +446,19 @@ class NovelDatabase:
             WHERE id = ?
         """, params)
         conn.commit()
+    
+    def reset_failed_chapters(self, book_id: int) -> int:
+        """Set all 'failed' chapters of a book back to 'pending' so a run can
+        resume them into the main DOCX. Returns how many chapters were reset."""
+        conn = self._get_connection()
+        cursor = conn.execute("""
+            UPDATE chapters 
+            SET download_status = 'pending', error_message = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE book_id = ? AND download_status = 'failed'
+        """, (book_id,))
+        conn.commit()
+        return cursor.rowcount
     
     # === SETTINGS OPERATIONS ===
     

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { bookApi } from '../api';
+import { bookApi, translateApi } from '../api';
 import { bookStatusColors, chapterStatusColors } from '../constants';
 import Layout from '../components/Layout';
 
@@ -10,9 +10,20 @@ const BookDetails = ({ bookId, onBack }) => {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(null);
   const [redownloadDocxExists, setRedownloadDocxExists] = useState(false);
+  const [retranslateDocxExists, setRetranslateDocxExists] = useState(false);
   const [tags, setTags] = useState([]);
   const [maxChapters, setMaxChapters] = useState('');
   const pollingRef = useRef(null);
+
+  // Edit info form
+  const [editOpen, setEditOpen] = useState(false);
+  const [form, setForm] = useState({ title: '', author: '', short_description: '', book_web_status: '' });
+  const [formTags, setFormTags] = useState('');
+  const [coverFile, setCoverFile] = useState(null);
+
+  // Per-book corrections
+  const [corrections, setCorrections] = useState([]);
+  const [correctionsOpen, setCorrectionsOpen] = useState(false);
 
   useEffect(() => {
     if (!bookId) return;
@@ -24,24 +35,52 @@ const BookDetails = ({ bookId, onBack }) => {
 
   const fetchData = async () => {
     try {
-      const [bookRes, chaptersRes, progressRes, rdInfoRes, tagsRes] = await Promise.all([
+      const [bookRes, chaptersRes, progressRes, tagsRes, correctionsRes] = await Promise.all([
         bookApi.getOne(bookId),
         bookApi.getChapters(bookId),
-        bookApi.getProgress(bookId),
-        bookApi.redownloadDocxInfo(bookId).catch(() => ({ data: { exists: false } })),
+        bookApi.getProgress(bookId).catch(() => ({ data: { active: false } })),
         bookApi.bookTags(bookId).catch(() => ({ data: { tags: [] } })),
+        translateApi.corrections(bookId).catch(() => []),
       ]);
       setBook(bookRes.data);
       setChapters(chaptersRes.data);
-      setRedownloadDocxExists(rdInfoRes.data.exists);
       setTags(tagsRes.data.tags);
-      const p = progressRes.data;
-      setProgress(p);
-      if (p.active) {
-        setDownloading(true);
-      } else if (downloading) {
-        setDownloading(false);
-        stopPolling();
+      setCorrections(correctionsRes.data || correctionsRes || []);
+      setForm({
+        title: bookRes.data.title || '',
+        author: bookRes.data.author || '',
+        short_description: bookRes.data.short_description || '',
+        book_web_status: bookRes.data.book_web_status || '',
+      });
+      setFormTags(tagsRes.data.tags.join(', '));
+      const isTranslated = bookRes.data.is_translated === 1;
+
+      if (isTranslated) {
+        // Translation progress + retranslate docx info
+        const [tp, rt] = await Promise.all([
+          translateApi.progress(bookId),
+          translateApi.retranslateDocxInfo(bookId).catch(() => ({ data: { exists: false } })),
+        ]);
+        setRetranslateDocxExists(rt.data.exists);
+        const p = tp.data;
+        setProgress(p);
+        if (p.active) {
+          setDownloading(true);
+        } else if (downloading) {
+          setDownloading(false);
+          stopPolling();
+        }
+      } else {
+        const [rdInfoRes] = [await bookApi.redownloadDocxInfo(bookId).catch(() => ({ data: { exists: false } }))];
+        setRedownloadDocxExists(rdInfoRes.data.exists);
+        const p = progressRes.data;
+        setProgress(p);
+        if (p.active) {
+          setDownloading(true);
+        } else if (downloading) {
+          setDownloading(false);
+          stopPolling();
+        }
       }
     } catch (err) {
       console.error('Failed to fetch book details', err);
@@ -158,6 +197,121 @@ const BookDetails = ({ bookId, onBack }) => {
     }
   };
 
+  const getTranslateMethod = async () => {
+    try {
+      const res = await translateApi.prepare();
+      return res.data.method || 'api';
+    } catch (err) {
+      return 'api';
+    }
+  };
+
+  const handleTranslateAll = async () => {
+    setDownloading(true);
+    startPolling();
+    try {
+      const method = await getTranslateMethod();
+      const params = {};
+      const val = parseInt(maxChapters, 10);
+      if (val > 0) params.max_chapters = val;
+      await translateApi.run(bookId, method, params.max_chapters || null);
+    } catch (err) {
+      alert('Translate failed: ' + (err.response?.data?.detail || err.message));
+      stopPolling();
+      setDownloading(false);
+    }
+  };
+
+  const handleRetranslate = async () => {
+    if (!confirm('Re-translate failed chapters? Output goes to _retranslate.docx.')) return;
+    try {
+      const method = await getTranslateMethod();
+      await translateApi.retranslate(bookId, method);
+      setDownloading(true);
+      startPolling();
+    } catch (err) {
+      alert('Re-translate failed: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const handleContinue = async () => {
+    if (!confirm('Continue failed chapters into the main DOCX? Use after updating the Cloudflare cookie.')) return;
+    try {
+      const method = await getTranslateMethod();
+      await translateApi.continueRun(bookId, method);
+      setDownloading(true);
+      startPolling();
+    } catch (err) {
+      alert('Continue failed: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const handleRefreshCookie = async () => {
+    try {
+      alert('A Chrome window will open so Cloudflare can issue a fresh cookie.\n' +
+            'If a challenge appears, click it once and wait.');
+      const res = await translateApi.refreshCookies();
+      alert(res.data.ok ? 'Fresh cookie captured and saved.' : 'Could not capture a fresh cookie.');
+    } catch (err) {
+      alert('Cookie refresh failed: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const handleCancelTranslate = async () => {
+    if (!confirm('Cancel translation? Progress will be saved.')) return;
+    try {
+      await translateApi.cancel(bookId);
+      stopPolling();
+      setDownloading(false);
+      fetchData();
+    } catch (err) {
+      alert('Cancel failed: ' + err.message);
+    }
+  };
+
+  const handleSaveInfo = async () => {
+    try {
+      const payload = {};
+      if (form.title.trim()) payload.title = form.title.trim();
+      payload.author = form.author.trim();
+      payload.short_description = form.short_description.trim();
+      payload.book_web_status = form.book_web_status.trim();
+      await bookApi.updateInfo(bookId, payload);
+      const newTags = formTags.split(',').map(t => t.trim()).filter(Boolean);
+      await bookApi.updateBookTags(bookId, newTags);
+      if (coverFile) {
+        await bookApi.uploadCover(bookId, coverFile);
+      }
+      setCoverFile(null);
+      setEditOpen(false);
+      alert('Book info saved.');
+      fetchData();
+    } catch (err) {
+      alert('Save failed: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const handleSaveCorrections = async () => {
+    const clean = corrections
+      .filter(c => (c.find_text || '').trim())
+      .map(c => ({
+        find_text: (c.find_text || '').trim(),
+        replace_text: c.replace_text || '',
+        enabled: !!c.enabled,
+      }));
+    try {
+      await translateApi.updateCorrections(bookId, clean);
+      setCorrectionsOpen(false);
+      alert('Corrections saved.');
+    } catch (err) {
+      alert('Save corrections failed: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const updateCorrection = (idx, field, value) => {
+    setCorrections(prev => prev.map((c, i) => i === idx ? { ...c, [field]: value } : c));
+  };
+
   if (loading) return <div className="text-center py-10 text-gray-500">Loading book details...</div>;
   if (!book) return <div className="text-center py-10 text-red-500">Book not found</div>;
 
@@ -166,12 +320,21 @@ const BookDetails = ({ bookId, onBack }) => {
   const totalChapters = book.total_chapters || 0;
   const progressPct = totalChapters > 0 ? Math.round((completedChapters / totalChapters) * 100) : 0;
   const isCompleted = ['completed', 'completed_with_errors'].includes(book.download_status);
+  const isTranslated = book.is_translated === 1;
 
   return (
     <Layout>
       <div className="flex items-center justify-between mb-4">
         <button onClick={onBack} className="text-sm text-gray-500 hover:text-blue-600 transition">&larr; Back</button>
         <div className="flex gap-2">
+          <button onClick={() => setEditOpen(!editOpen)}
+            className="text-sm px-3 py-1 rounded transition bg-gray-100 text-gray-600 hover:text-blue-600">
+            {editOpen ? 'Cancel' : 'Edit Info'}
+          </button>
+          <button onClick={() => setCorrectionsOpen(!correctionsOpen)}
+            className={`text-sm px-3 py-1 rounded transition ${correctionsOpen ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600 hover:text-indigo-600'}`}>
+            Corrections
+          </button>
           <button onClick={async () => { await bookApi.toggleFavorite(bookId); fetchData(); }}
             className={`text-lg leading-none px-2 py-1 rounded transition ${book.is_favorite ? 'text-yellow-500 bg-yellow-50' : 'text-gray-300 hover:text-yellow-400 hover:bg-gray-50'}`}
             title={book.is_favorite ? 'Remove from favorites' : 'Add to favorites'}>
@@ -184,6 +347,101 @@ const BookDetails = ({ bookId, onBack }) => {
           </button>
         </div>
       </div>
+
+      {editOpen && (
+        <div className="bg-white rounded-lg shadow p-6 mb-6">
+          <h2 className="text-lg font-semibold mb-4">Edit Book Info</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Title</label>
+              <input type="text" value={form.title}
+                onChange={e => setForm({ ...form, title: e.target.value })}
+                className="w-full border rounded px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Author</label>
+              <input type="text" value={form.author}
+                onChange={e => setForm({ ...form, author: e.target.value })}
+                className="w-full border rounded px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Book web status</label>
+              <input type="text" value={form.book_web_status}
+                onChange={e => setForm({ ...form, book_web_status: e.target.value })}
+                placeholder="e.g. Hoàn thành, Còn tiếp, Parsed"
+                className="w-full border rounded px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Tags (comma separated)</label>
+              <input type="text" value={formTags}
+                onChange={e => setFormTags(e.target.value)}
+                className="w-full border rounded px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Cover image</label>
+              <input type="file" accept=".jpg,.jpeg,.png,.gif,.webp"
+                onChange={e => setCoverFile(e.target.files[0] || null)}
+                className="w-full text-sm" />
+            </div>
+          </div>
+          <div className="mt-4">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Summary</label>
+            <textarea value={form.short_description}
+              onChange={e => setForm({ ...form, short_description: e.target.value })}
+              rows={5}
+              className="w-full border rounded px-3 py-2 text-sm" />
+          </div>
+          <div className="mt-4">
+            <button onClick={handleSaveInfo}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+              Save Info
+            </button>
+          </div>
+        </div>
+      )}
+
+      {correctionsOpen && (
+        <div className="bg-white rounded-lg shadow p-6 mb-6">
+          <h2 className="text-lg font-semibold mb-1">Text Corrections</h2>
+          <p className="text-xs text-gray-500 mb-4">
+            Find/replace applied to downloaded or translated text, after the global Text Cleaning rules.
+            Matching is case-insensitive. Empty rows are ignored on save.
+          </p>
+          {corrections.length === 0 && (
+            <p className="text-sm text-gray-400 mb-3">No corrections yet. Add one below.</p>
+          )}
+          <div className="space-y-2">
+            {corrections.map((c, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2">
+                <input type="checkbox" checked={!!c.enabled}
+                  onChange={e => updateCorrection(i, 'enabled', e.target.checked)}
+                  className="h-4 w-4" title="Enabled" />
+                <input type="text" value={c.find_text || ''}
+                  onChange={e => updateCorrection(i, 'find_text', e.target.value)}
+                  placeholder="Find text"
+                  className="flex-1 min-w-[140px] border rounded px-2 py-1.5 text-sm" />
+                <span className="text-gray-400">→</span>
+                <input type="text" value={c.replace_text || ''}
+                  onChange={e => updateCorrection(i, 'replace_text', e.target.value)}
+                  placeholder="Replace with"
+                  className="flex-1 min-w-[140px] border rounded px-2 py-1.5 text-sm" />
+                <button onClick={() => setCorrections(prev => prev.filter((_, j) => j !== i))}
+                  className="text-sm text-red-500 hover:text-red-700 px-2">✕</button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button onClick={() => setCorrections(prev => [...prev, { find_text: '', replace_text: '', enabled: true }])}
+              className="text-sm border border-gray-300 text-gray-600 hover:bg-gray-50 px-3 py-1.5 rounded transition">
+              + Add correction
+            </button>
+            <button onClick={handleSaveCorrections}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium transition">
+              Save Corrections
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg shadow p-6 mb-6">
         <div className="flex flex-col lg:flex-row gap-6">
@@ -265,7 +523,7 @@ const BookDetails = ({ bookId, onBack }) => {
         {progress && progress.active && (
           <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded text-sm">
             <div className="font-medium text-indigo-800">
-              Downloading: {progress.current_title}
+              {isTranslated ? 'Translating' : 'Downloading'}: {progress.current_title}
             </div>
             <div className="text-indigo-600 mt-1">
               {progress.success_count} success / {progress.fail_count} failed
@@ -275,6 +533,78 @@ const BookDetails = ({ bookId, onBack }) => {
         )}
 
         <div className="mt-4 flex flex-wrap gap-2 items-center">
+          {isTranslated ? (
+            <>
+          <div className="flex items-center gap-1 mr-1">
+            <label className="text-xs text-gray-500 whitespace-nowrap">Max:</label>
+            <input type="number" min="0" value={maxChapters}
+              onChange={e => setMaxChapters(e.target.value)}
+              placeholder="no limit"
+              className="w-20 border rounded px-2 py-1.5 text-sm text-center" />
+          </div>
+          {downloading ? (
+            <button onClick={handleCancelTranslate} className="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+              Cancel Translate
+            </button>
+          ) : isCompleted ? (
+            <>
+              {failedChapters.length > 0 && (
+                <button onClick={handleContinue}
+                  className="bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded text-sm font-medium transition"
+                  title="Reset failed chapters to pending and append them to the main DOCX">
+                  Continue ({failedChapters.length} failed)
+                </button>
+              )}
+              <button onClick={handleRetranslate} disabled={failedChapters.length === 0}
+                className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
+                Re-translate ({failedChapters.length} failed)
+              </button>
+              <button onClick={handleRefreshCookie}
+                className="bg-gray-600 hover:bg-gray-700 text-white px-5 py-2 rounded text-sm font-medium transition"
+                title="Open Chrome to refresh the cf_clearance cookie">
+                Refresh Cookie
+              </button>
+              <span className="text-xs bg-cyan-100 text-cyan-700 px-3 py-1.5 rounded font-medium">
+                Translated book — content produced by the Translate tool.
+              </span>
+            </>
+          ) : (
+            <>
+              <button onClick={handleContinue} disabled={failedChapters.length === 0}
+                className="bg-teal-600 hover:bg-teal-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition"
+                title="Reset failed chapters to pending and append them to the main DOCX">
+                Continue ({failedChapters.length} failed)
+              </button>
+              <button onClick={handleRetranslate} disabled={failedChapters.length === 0}
+                className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
+                Re-translate ({failedChapters.length} failed)
+              </button>
+              <button onClick={handleRefreshCookie}
+                className="bg-gray-600 hover:bg-gray-700 text-white px-5 py-2 rounded text-sm font-medium transition"
+                title="Open Chrome to refresh the cf_clearance cookie">
+                Refresh Cookie
+              </button>
+              <button onClick={handleTranslateAll} disabled={totalChapters === 0}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
+                Translate All
+              </button>
+            </>
+          )}
+              {completedChapters > 0 && (
+                <a href={bookApi.docxUrl(bookId)} target="_blank"
+                  className="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
+                  Open DOCX
+                </a>
+              )}
+              {retranslateDocxExists && (
+                <a href={translateApi.retranslateDocxUrl(bookId)} target="_blank"
+                  className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
+                  Open Re-translate DOCX
+                </a>
+              )}
+            </>
+          ) : (
+            <>
           <div className="flex items-center gap-1 mr-1">
             <label className="text-xs text-gray-500 whitespace-nowrap">Max:</label>
             <input type="number" min="0" value={maxChapters}
@@ -335,6 +665,8 @@ const BookDetails = ({ bookId, onBack }) => {
               </button>
             </>
           )}
+            </>
+          )}
         </div>
       </div>
 
@@ -366,13 +698,13 @@ const BookDetails = ({ bookId, onBack }) => {
                   </span>
                 </td>
                 <td className="px-6 py-3">
-                  {ch.download_status === 'failed' && (
+                  {!isTranslated && ch.download_status === 'failed' && (
                     <button onClick={() => handleChapterDownload(ch.id)}
                       className="text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 px-2 py-1 rounded transition">
                       Retry
                     </button>
                   )}
-                  {ch.download_status === 'completed' && (
+                  {!isTranslated && ch.download_status === 'completed' && (
                     <button onClick={() => handleChapterDownload(ch.id)}
                       className="text-xs bg-purple-100 hover:bg-purple-200 text-purple-700 px-2 py-1 rounded transition">
                       Redownload
