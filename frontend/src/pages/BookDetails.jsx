@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { bookApi, translateApi } from '../api';
 import { bookStatusColors, chapterStatusColors } from '../constants';
 import Layout from '../components/Layout';
+import Modal from '../components/Modal';
 
 const BookDetails = ({ bookId, onBack }) => {
   const [book, setBook] = useState(null);
@@ -366,15 +367,16 @@ const BookDetails = ({ bookId, onBack }) => {
 
   return (
     <Layout>
-      <div className="flex items-center justify-between mb-4">
+      <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b border-gray-200 py-2 -mx-4 px-4 mb-4 flex items-center justify-between">
         <button onClick={onBack} className="text-sm text-gray-500 hover:text-blue-600 transition">&larr; Back</button>
         <div className="flex gap-2">
           <button onClick={() => setEditOpen(!editOpen)}
             className="text-sm px-3 py-1 rounded transition bg-gray-100 text-gray-600 hover:text-blue-600">
             {editOpen ? 'Cancel' : 'Edit Info'}
           </button>
-          <button onClick={() => setCorrectionsOpen(!correctionsOpen)}
-            className={`text-sm px-3 py-1 rounded transition ${correctionsOpen ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600 hover:text-indigo-600'}`}>
+          <button onClick={() => setCorrectionsOpen(true)}
+            className={`text-sm px-3 py-1 rounded transition ${correctionsOpen ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600 hover:text-indigo-600'}`}
+            title="Open text corrections settings">
             Corrections
           </button>
           <button onClick={async () => { await bookApi.toggleFavorite(bookId); fetchData(); }}
@@ -442,9 +444,7 @@ const BookDetails = ({ bookId, onBack }) => {
         </div>
       )}
 
-      {correctionsOpen && (
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <h2 className="text-lg font-semibold mb-1">Text Corrections</h2>
+      <Modal open={correctionsOpen} onClose={() => setCorrectionsOpen(false)} title="Text Corrections">
           <p className="text-xs text-gray-500 mb-4">
             Find/replace applied to downloaded or translated text, after the global Text Cleaning rules.
             Matching is case-insensitive. Empty rows are ignored on save.
@@ -482,8 +482,7 @@ const BookDetails = ({ bookId, onBack }) => {
               Save Corrections
             </button>
           </div>
-        </div>
-      )}
+        </Modal>
 
       <div className="bg-white rounded-lg shadow p-6 mb-6">
         <div className="flex flex-col lg:flex-row gap-6">
@@ -725,26 +724,16 @@ const BookDetails = ({ bookId, onBack }) => {
         </div>
       </div>
 
-      {preview && (
-        <div className="bg-white rounded-lg shadow p-6 mb-6 border-2 border-emerald-200">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-lg font-semibold">
-              Correction preview — Chương {preview.chapter_order}
-            </h2>
-            <button onClick={() => setPreview(null)}
-              className="text-sm text-gray-500 hover:text-gray-700 transition">
-              Close
-            </button>
-          </div>
-          <p className="text-xs text-gray-500 mb-3">
-            This is how the chapter will look after corrections are applied. Nothing is saved.
-          </p>
-          <h3 className="text-base font-semibold text-gray-800 mb-3">{preview.title}</h3>
-          <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line max-h-96 overflow-y-auto">
-            {preview.content || '(no content stored)'}
-          </div>
+      <Modal open={!!preview} onClose={() => setPreview(null)} wide
+        title={preview ? `Correction preview — Chương ${preview.chapter_order}` : ''}>
+        <p className="text-xs text-gray-500 mb-3">
+          This is how the chapter will look after corrections are applied. Nothing is saved.
+        </p>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">{preview?.title}</h3>
+        <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">
+          {preview?.content || '(no content stored)'}
         </div>
-      )}
+      </Modal>
 
       <div className="bg-white rounded-lg shadow overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
