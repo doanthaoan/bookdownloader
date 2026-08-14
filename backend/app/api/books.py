@@ -1,16 +1,28 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Body
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Body, UploadFile, File
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel
 from typing import List, Dict, Optional
 import os
 import sqlite3
+import shutil
 from pathlib import Path
 from app.database import get_database
 from app.services.extractor import ChapterListExtractor, extract_chapters_for_book
 from app.services.downloader import download_book, cancel_download, get_download_progress, redownload_book, download_single_chapter
+from app.services.docx_exporter import build_book_docx, chapter_text, diff_corrections
+from app.services.translator import apply_corrections
 from app.config import TRUYENWIKI
 
 router = APIRouter()
 db = get_database()
+
+
+class UpdateBookInfoRequest(BaseModel):
+    title: Optional[str] = None
+    author: Optional[str] = None
+    short_description: Optional[str] = None
+    book_web_status: Optional[str] = None
+    cover_image_url: Optional[str] = None
 
 @router.get("/")
 async def get_all_books(search: str = None, status: str = None, author: str = None,
@@ -122,6 +134,8 @@ async def download_book_task(book_id: int, background_tasks: BackgroundTasks, ma
     book = db.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
+    if book.get('is_translated'):
+        raise HTTPException(status_code=400, detail="Translated book — content is produced by the Translate tool, not by web download.")
     
     def run_download():
         try:
@@ -280,6 +294,85 @@ async def get_docx_info(book_id: int):
         "size": file_path.stat().st_size if file_path.exists() else 0,
     }
 
+@router.post("/{book_id}/export-corrected")
+async def export_corrected(book_id: int, chapter_ids: List[int] = Body(default=[])):
+    """Render a corrected DOCX from DB content (source of truth), applying per-book
+    corrections at render time. Nothing in the DB is modified. chapter_ids: optional
+    list of chapter ids to include (empty = whole book).
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    chapters = db.get_chapters_by_book(book_id)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="No chapters to export.")
+    corrections = db.get_book_corrections(book_id)
+    file_name = f"{book_id}_{book['seo_title_basic']}_corrected.docx"
+    base_dir = Path(__file__).parent.parent.parent
+    file_path = base_dir / TRUYENWIKI['book_path'] / file_name
+    build_book_docx(book, chapters, corrections, file_path, chapter_ids=chapter_ids or None)
+    return {
+        "exists": True,
+        "file_name": file_name,
+        "file_path": str(file_path.resolve()),
+        "size": file_path.stat().st_size,
+        "chapter_count": len(chapter_ids) if chapter_ids else len(chapters),
+    }
+
+@router.get("/{book_id}/export-corrected-docx")
+async def get_export_corrected_docx(book_id: int):
+    """Download the corrected DOCX file."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    file_name = f"{book_id}_{book['seo_title_basic']}_corrected.docx"
+    base_dir = Path(__file__).parent.parent.parent
+    file_path = base_dir / TRUYENWIKI['book_path'] / file_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Corrected DOCX file not found. Export it first.")
+    return FileResponse(
+        path=str(file_path),
+        filename=file_name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+@router.get("/{book_id}/export-corrected-docx-info")
+async def get_export_corrected_docx_info(book_id: int):
+    """Check if the corrected DOCX file exists and return its info."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    file_name = f"{book_id}_{book['seo_title_basic']}_corrected.docx"
+    base_dir = Path(__file__).parent.parent.parent
+    file_path = base_dir / TRUYENWIKI['book_path'] / file_name
+    return {
+        "exists": file_path.exists(),
+        "file_name": file_name,
+        "file_path": str(file_path.resolve()) if file_path.exists() else None,
+        "size": file_path.stat().st_size if file_path.exists() else 0,
+    }
+
+@router.post("/{book_id}/preview-correction")
+async def preview_correction(book_id: int, chapter_id: int):
+    """Preview the corrected text of a single chapter. Rendered in memory only —
+    the result is NOT saved to the database or disk."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    chapter = next((c for c in db.get_chapters_by_book(book_id) if c["id"] == chapter_id), None)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    corrections = db.get_book_corrections(book_id)
+    title, content = chapter_text(chapter, bool(book.get("is_translated")))
+    return {
+        "chapter_id": chapter_id,
+        "chapter_order": chapter["chapter_order"],
+        "title": apply_corrections(title, corrections),
+        "content": apply_corrections(content, corrections),
+        "title_segments": diff_corrections(title, corrections),
+        "content_segments": diff_corrections(content, corrections),
+    }
+
 @router.get("/{book_id}/cover")
 async def get_cover_image(book_id: int):
     """Serve the cover image for a book.
@@ -380,6 +473,62 @@ async def toggle_sent(book_id: int):
     new_val = 0 if book.get('is_sent') else 1
     db.update_book_info(book_id, is_sent=new_val)
     return {"is_sent": new_val, "message": "Marked as sent" if new_val else "Marked as not sent"}
+
+@router.put("/{book_id}")
+async def update_book_info(book_id: int, req: UpdateBookInfoRequest):
+    """Update editable book metadata (title, author, summary, web status, cover URL)."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    updates = {}
+    if req.title is not None and req.title.strip():
+        if req.title.strip() != book.get('title'):
+            existing = db.get_book_by_title(req.title.strip())
+            if existing and existing['id'] != book_id:
+                raise HTTPException(status_code=400, detail="A book with this title already exists")
+            updates['title'] = req.title.strip()
+    if req.author is not None:
+        updates['author'] = req.author.strip() or None
+    if req.short_description is not None:
+        updates['short_description'] = req.short_description.strip() or None
+    if req.book_web_status is not None:
+        updates['book_web_status'] = req.book_web_status.strip() or None
+    if req.cover_image_url is not None:
+        updates['cover_image_url'] = req.cover_image_url.strip() or None
+
+    if updates:
+        db.update_book_info(book_id, **updates)
+    return {"message": "Book info updated", "updated_fields": list(updates.keys())}
+
+
+@router.post("/{book_id}/cover")
+async def upload_cover(book_id: int, file: UploadFile = File(...)):
+    """Upload a cover image for a book. Saved as {book_id}_{seo_title_basic}.{ext}
+    in the book directory so GET /{book_id}/cover serves it locally.
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
+        raise HTTPException(status_code=400, detail="Cover must be jpg/png/gif/webp")
+
+    save_dir = Path(__file__).parent.parent.parent / (db.get_setting('book_path') or TRUYENWIKI['book_path'])
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Remove existing cover with a different extension
+    basename = f"{book_id}_{book['seo_title_basic']}"
+    for old_ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
+        old = save_dir / f"{basename}{old_ext}"
+        if old.exists() and old.suffix.lower() != ext:
+            old.unlink()
+
+    dest = save_dir / f"{basename}{ext}"
+    with dest.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    return {"message": f"Cover saved as {dest.name}"}
 
 @router.delete("/{book_id}")
 async def delete_book(book_id: int):

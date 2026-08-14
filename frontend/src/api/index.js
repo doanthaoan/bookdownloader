@@ -18,6 +18,10 @@ export const bookApi = {
   downloadChapter: (bookId, chapterId) => api.post(`/books/${bookId}/chapters/${chapterId}/download`),
   docxInfo: (id) => api.get(`/books/${id}/docx-info`),
   redownloadDocxInfo: (id) => api.get(`/books/${id}/redownload-docx-info`),
+  exportCorrected: (id, chapterIds = []) => api.post(`/books/${id}/export-corrected`, chapterIds),
+  exportCorrectedDocxInfo: (id) => api.get(`/books/${id}/export-corrected-docx-info`),
+  exportCorrectedDocxUrl: (id) => `${BASE_URL}/api/books/${id}/export-corrected-docx`,
+  previewCorrection: (id, chapterId) => api.post(`/books/${id}/preview-correction`, null, { params: { chapter_id: chapterId } }),
   toggleFavorite: (id) => api.post(`/books/${id}/toggle-favorite`),
   toggleSent: (id) => api.post(`/books/${id}/toggle-sent`),
   coverUrl: (id) => `${BASE_URL}/api/books/${id}/cover`,
@@ -30,6 +34,12 @@ export const bookApi = {
   bookTags: (id) => api.get(`/books/${id}/tags`),
   updateBookTags: (id, tags) => api.put(`/books/${id}/tags`, tags),
   allTags: () => api.get('/books/tags'),
+  updateInfo: (id, data) => api.put(`/books/${id}`, data),
+  uploadCover: (id, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post(`/books/${id}/cover`, form);
+  },
 };
 
 export const settingsApi = {
@@ -55,6 +65,32 @@ export const textCleaningApi = {
   reorder: (id, newOrder) => api.put(`/text-cleaning/${id}/reorder`, null, { params: { new_order: newOrder } }),
   delete: (id) => api.delete(`/text-cleaning/${id}`),
   test: (chapterUrl) => api.post('/text-cleaning/test', null, { params: { chapter_url: chapterUrl } }),
+};
+
+export const translateApi = {
+  prepare: () => api.get('/translate/prepare'),
+  check: () => api.get('/translate/check'),
+  sourceFiles: () => api.get('/translate/source-files'),
+  upload: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post('/translate/upload', form);
+  },
+  deleteFile: (filename) => api.delete(`/translate/source-files/${encodeURIComponent(filename)}`),
+  parse: (filename) => api.post('/translate/parse', null, { params: { filename } }),
+  translateText: (text, method = 'api') => api.post('/translate/text', { text, method }),
+  createBook: (filename, title, author) => api.post('/translate/books', { filename, title, author }),
+  getBook: (id) => api.get(`/translate/books/${id}`),
+  corrections: (id) => api.get(`/translate/books/${id}/corrections`),
+  updateCorrections: (id, corrections) => api.put(`/translate/books/${id}/corrections`, { corrections }),
+  run: (id, method = 'api', maxChapters = null) => api.post(`/translate/books/${id}/run`, null, { params: { method, max_chapters: maxChapters } }),
+  retranslate: (id, method = 'api') => api.post(`/translate/books/${id}/retranslate`, null, { params: { method } }),
+  continueRun: (id, method = 'api') => api.post(`/translate/books/${id}/continue`, null, { params: { method } }),
+  refreshCookies: () => api.post('/translate/refresh-cookies'),
+  retranslateDocxInfo: (id) => api.get(`/translate/books/${id}/retranslate-docx-info`),
+  retranslateDocxUrl: (id) => `${api.defaults.baseURL}/translate/books/${id}/retranslate-docx`,
+  progress: (id) => api.get(`/translate/books/${id}/progress`),
+  cancel: (id) => api.post(`/translate/books/${id}/cancel`),
 };
 
 export default api;

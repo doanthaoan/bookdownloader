@@ -332,6 +332,56 @@ const Settings = () => {
           />
         </section>
 
+        {/* Translation Settings Section */}
+        <section className="bg-white rounded-lg shadow p-6">
+          <h2 className="text-lg font-semibold border-b pb-3 mb-4">Translation Settings</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Configure the dichtienghoa translation tool. If the API is blocked by Cloudflare,
+            paste a fresh <code>cf_clearance</code> cookie (from your browser's DevTools) as
+            <code> translate_cookies</code> JSON, e.g. <code>{'{"cf_clearance": "..."}'}</code>.
+            <code> translate_click_delay</code> = seconds to wait before clicking the translate
+            button; <code> translate_retry_delay</code> = seconds to wait before retrying the click
+            when the result textarea stays empty; <code> translate_max_retries</code> = max click
+            retries (keeps you from hammering the translation server). For the API method:
+            <code> translate_browser_ua</code> = your real browser User-Agent (from DevTools → Network),
+            <code> translate_impersonate</code> = curl_cffi target matching your Chrome version
+            (e.g. <code>chrome131</code>). <code> translate_cookie_wait</code> = seconds to wait in a
+            real Chrome for a fresh <code>cf_clearance</code> during auto refresh;
+            <code> translate_cookie_refresh_max</code> = max auto refreshes per request (prevents
+            blocking). When the refresh limit is reached, use the book's <code>Refresh Cookie</code>
+            or <code>Continue</code> button. Changes are saved immediately.
+          </p>
+          <div className="space-y-3">
+            {['translate_source_path', 'translate_api_endpoint', 'translate_site', 'translate_target_lang',
+              'translate_click_delay', 'translate_retry_delay', 'translate_max_retries',
+              'translate_impersonate', 'translate_browser_ua',
+              'translate_cookie_wait', 'translate_cookie_refresh_max'].map(key => {
+              const setting = config.db_settings.find(s => s.key === key);
+              if (!setting) return null;
+              return (
+                <div key={key} className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-gray-700 w-52 flex-shrink-0">{key}</span>
+                  <input
+                    className="flex-1 border rounded px-2 py-1.5 text-sm"
+                    value={setting.value}
+                    onChange={e => handleSettingChange(key, e.target.value)}
+                  />
+                </div>
+              );
+            })}
+            <div className="flex items-start gap-3">
+              <span className="text-sm font-medium text-gray-700 w-52 flex-shrink-0">translate_cookies</span>
+              <textarea
+                className="flex-1 border rounded px-2 py-1.5 text-sm font-mono"
+                rows={2}
+                value={(config.db_settings.find(s => s.key === 'translate_cookies') || {}).value || '{}'}
+                onChange={e => handleSettingChange('translate_cookies', e.target.value)}
+                placeholder='{"cf_clearance": "..."}'
+              />
+            </div>
+          </div>
+        </section>
+
       </div>
     </Layout>
   );

@@ -264,10 +264,16 @@ const BookList = ({ onViewBook }) => {
                       className="text-xs text-gray-500 hover:text-blue-600 px-1.5 py-1 transition" title="Details">
                       📋
                     </button>
-                    {book.download_status !== 'completed' && book.download_status !== 'in_progress' && (
+                    {book.download_status !== 'completed' && book.download_status !== 'in_progress' && book.is_translated !== 1 && (
                       <button onClick={() => handleDownload(book.id)}
                         className="text-xs text-gray-500 hover:text-green-600 px-1.5 py-1 transition" title="Download">
                         ⬇
+                      </button>
+                    )}
+                    {book.download_status !== 'completed' && book.download_status !== 'in_progress' && book.is_translated === 1 && (
+                      <button onClick={() => onViewBook(book.id)}
+                        className="text-xs text-gray-500 hover:text-cyan-600 px-1.5 py-1 transition" title="Translate">
+                        ✍
                       </button>
                     )}
                     {book.download_status === 'in_progress' && (

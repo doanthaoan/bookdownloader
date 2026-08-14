@@ -73,7 +73,19 @@ INSERT OR IGNORE INTO application_settings (key, value, description) VALUES
 ('login_trigger_selector', 'a[data-action="login"]', 'CSS selector for the login trigger element on homepage'),
 ('domain', 'wikicv.org', 'Main site domain (e.g., wikicv.org)'),
 ('book_path', './data', 'Directory to save downloaded DOCX files'),
-('logs_path', './data/logs', 'Directory to save log files');
+('logs_path', './data/logs', 'Directory to save log files'),
+('translate_source_path', './data/translate_src', 'Folder to scan for raw TXT novels to translate'),
+('translate_api_endpoint', 'https://dichtienghoa.com/transtext', 'Translation API endpoint'),
+('translate_site', 'https://dichtienghoa.com', 'Translation website for web method'),
+('translate_target_lang', 'vi', 'Target language code for translation'),
+('translate_click_delay', '3', 'Seconds to wait before clicking the translate button (web method)'),
+('translate_retry_delay', '10', 'Seconds to wait before retrying the translate click if no result'),
+('translate_max_retries', '3', 'Max times to retry the translate click when no result (prevents server blocking)'),
+('translate_browser_ua', '', 'Your real browser User-Agent (used with curl_cffi to pass Cloudflare on the API method)'),
+('translate_impersonate', 'chrome', 'curl_cffi impersonation target: chrome, chrome120, chrome124, chrome131, etc.'),
+('translate_cookies', '{}', 'JSON dict of cookies (e.g. cf_clearance) for the translation site'),
+('translate_cookie_wait', '60', 'Seconds to wait in a real Chrome for Cloudflare to issue a fresh cf_clearance during auto cookie refresh'),
+('translate_cookie_refresh_max', '1', 'Max times to auto-refresh the cf_clearance cookie per request (prevents server blocking)');
 
 -- Trigger to automatically update updated_at timestamp
 CREATE TRIGGER IF NOT EXISTS update_books_timestamp 
@@ -87,6 +99,18 @@ AFTER UPDATE ON chapters
 BEGIN
     UPDATE chapters SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
+
+-- Per-book find/replace corrections applied to translated chapter content
+CREATE TABLE IF NOT EXISTS book_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    find_text TEXT NOT NULL,
+    replace_text TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
+);
 
 -- Text cleaning rules for chapter content
 CREATE TABLE IF NOT EXISTS text_cleaning_rules (
