@@ -4,6 +4,22 @@ import { bookStatusColors, chapterStatusColors } from '../constants';
 import Layout from '../components/Layout';
 import Modal from '../components/Modal';
 
+const CorrectionSegments = ({ segments }) => (
+  <>
+    {segments.map((s, i) => {
+      if (s.type === 'removed') {
+        return <span key={i} className="line-through text-red-500">{s.text}</span>;
+      }
+      if (s.type === 'replaced') {
+        return s.text
+          ? <span key={i} className="bg-yellow-200 rounded px-0.5">{s.text}</span>
+          : null;
+      }
+      return <span key={i}>{s.text}</span>;
+    })}
+  </>
+);
+
 const BookDetails = ({ bookId, onBack }) => {
   const [book, setBook] = useState(null);
   const [chapters, setChapters] = useState([]);
@@ -727,11 +743,20 @@ const BookDetails = ({ bookId, onBack }) => {
       <Modal open={!!preview} onClose={() => setPreview(null)} wide
         title={preview ? `Correction preview — Chương ${preview.chapter_order}` : ''}>
         <p className="text-xs text-gray-500 mb-3">
-          This is how the chapter will look after corrections are applied. Nothing is saved.
+          This is how the chapter will look after corrections are applied.
+          <span className="line-through text-red-500 ml-1">Struck text</span> was replaced by
+          <span className="bg-yellow-200 rounded px-0.5 mx-1">highlighted text</span>.
+          Nothing is saved.
         </p>
-        <h3 className="text-base font-semibold text-gray-800 mb-3">{preview?.title}</h3>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">
+          {preview?.title_segments?.some(s => s.text)
+            ? <CorrectionSegments segments={preview.title_segments} />
+            : preview?.title}
+        </h3>
         <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">
-          {preview?.content || '(no content stored)'}
+          {preview?.content_segments?.some(s => s.text)
+            ? <CorrectionSegments segments={preview.content_segments} />
+            : (preview?.content || '(no content stored)')}
         </div>
       </Modal>
 

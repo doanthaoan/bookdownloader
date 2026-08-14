@@ -14,6 +14,8 @@ Storage conventions:
 
 from pathlib import Path
 
+import re
+
 from docx import Document
 from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -42,6 +44,45 @@ def chapter_text(ch, is_translated: bool) -> tuple:
         title = ch.get("chapter_title") or f"Chương {ch.get('chapter_order')}"
         body = ch.get("chapter_content") or ""
     return title, body
+
+
+def diff_corrections(text: str, corrections: list) -> list:
+    """Split text into segments showing what each per-book correction replaced.
+
+    Mirrors apply_corrections exactly (sequential, case-insensitive), producing:
+      {'type': 'text',     'text': <unchanged text>}
+      {'type': 'removed',  'text': <original matched text>}
+      {'type': 'replaced', 'text': <replacement text>}
+    Used by the correction-preview UI to strike through the original and
+    highlight the replacement. 'removed' segments are not re-scanned by later
+    rules (they no longer exist in the string apply_corrections continues with);
+    'replaced' and 'text' segments are.
+    """
+    segments = [{"type": "text", "text": text}]
+    for c in corrections:
+        if not c.get("enabled", True):
+            continue
+        find_text = c.get("find_text") or ""
+        replace_text = c.get("replace_text") or ""
+        if not find_text:
+            continue
+        new_segments = []
+        for seg in segments:
+            if seg["type"] == "removed":
+                new_segments.append(seg)
+                continue
+            seg_text = seg["text"]
+            last = 0
+            for m in re.finditer(re.escape(find_text), seg_text, flags=re.IGNORECASE):
+                if m.start() > last:
+                    new_segments.append({"type": seg["type"], "text": seg_text[last:m.start()]})
+                new_segments.append({"type": "removed", "text": m.group(0)})
+                new_segments.append({"type": "replaced", "text": replace_text})
+                last = m.end()
+            if last < len(seg_text):
+                new_segments.append({"type": seg["type"], "text": seg_text[last:]})
+        segments = new_segments
+    return segments
 
 
 def build_book_docx(book: dict, chapters: list, corrections: list, output_path,

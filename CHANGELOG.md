@@ -22,8 +22,8 @@ All notable changes to this project are documented here.
   - New shared `app/services/docx_exporter.py` renders a book DOCX from DB content and re-applies per-book corrections **idempotently** at render time. Used by the downloader, the translator, and the new export endpoint.
   - Download / translate / re-download / re-translate / continue runs now **auto-export the DOCX on completion** (from DB) with the same filename rules as before (`{book_id}_{seo}.docx`, `_redownload.docx`, `_retranslate.docx`).
 - **Export Corrected DOCX**: `POST /api/books/{id}/export-corrected` (whole book or a selected list of `chapter_ids`) → `{book_id}_{seo}_corrected.docx`, served via `GET /api/books/{id}/export-corrected-docx`. Nothing in the DB is modified.
-- **Correction preview**: `POST /api/books/{id}/preview-correction?chapter_id=N` returns the corrected chapter text rendered **in memory only** (never saved), so corrections can be checked before exporting.
-- Book Details UI: "Export Corrected" / "Open Corrected DOCX" buttons, plus per-chapter "Preview" and "Export" actions.
+- **Correction preview**: `POST /api/books/{id}/preview-correction?chapter_id=N` returns the corrected chapter text rendered **in memory only** (never saved), so corrections can be checked before exporting. Now opens in a popup modal and shows a diff — the original matched text is struck through and the replacement is highlighted in yellow (`diff_corrections` mirrors `apply_corrections` exactly).
+- Book Details UI: sticky top toolbar with "Export Corrected" / "Open Corrected DOCX" buttons, per-chapter "Preview" and "Export" actions, and the Corrections editor opened from a sticky button into a modal.
 - `chapters.translated_content` migration (idempotent `ALTER TABLE`).
 
 ---

@@ -9,7 +9,7 @@ from pathlib import Path
 from app.database import get_database
 from app.services.extractor import ChapterListExtractor, extract_chapters_for_book
 from app.services.downloader import download_book, cancel_download, get_download_progress, redownload_book, download_single_chapter
-from app.services.docx_exporter import build_book_docx, chapter_text
+from app.services.docx_exporter import build_book_docx, chapter_text, diff_corrections
 from app.services.translator import apply_corrections
 from app.config import TRUYENWIKI
 
@@ -364,13 +364,13 @@ async def preview_correction(book_id: int, chapter_id: int):
         raise HTTPException(status_code=404, detail="Chapter not found")
     corrections = db.get_book_corrections(book_id)
     title, content = chapter_text(chapter, bool(book.get("is_translated")))
-    title = apply_corrections(title, corrections)
-    content = apply_corrections(content, corrections)
     return {
         "chapter_id": chapter_id,
         "chapter_order": chapter["chapter_order"],
-        "title": title,
-        "content": content,
+        "title": apply_corrections(title, corrections),
+        "content": apply_corrections(content, corrections),
+        "title_segments": diff_corrections(title, corrections),
+        "content_segments": diff_corrections(content, corrections),
     }
 
 @router.get("/{book_id}/cover")
