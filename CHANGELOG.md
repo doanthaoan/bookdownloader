@@ -12,6 +12,22 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.3] — 2026-08-15
+
+### Added
+
+- **DB is now the source of truth; DOCX is a derived artifact.**
+  - Downloads store the globally-cleaned chapter text in `chapters.chapter_content` (and the cleaned page title in `chapter_title`); the incremental checkpoint DOCX writes were removed.
+  - Translations store the raw Vietnamese result in the new `chapters.translated_content` column (format `<viet_title>\n<viet_body>`); per-book corrections are no longer burned in at translate time.
+  - New shared `app/services/docx_exporter.py` renders a book DOCX from DB content and re-applies per-book corrections **idempotently** at render time. Used by the downloader, the translator, and the new export endpoint.
+  - Download / translate / re-download / re-translate / continue runs now **auto-export the DOCX on completion** (from DB) with the same filename rules as before (`{book_id}_{seo}.docx`, `_redownload.docx`, `_retranslate.docx`).
+- **Export Corrected DOCX**: `POST /api/books/{id}/export-corrected` (whole book or a selected list of `chapter_ids`) → `{book_id}_{seo}_corrected.docx`, served via `GET /api/books/{id}/export-corrected-docx`. Nothing in the DB is modified.
+- **Correction preview**: `POST /api/books/{id}/preview-correction?chapter_id=N` returns the corrected chapter text rendered **in memory only** (never saved), so corrections can be checked before exporting.
+- Book Details UI: "Export Corrected" / "Open Corrected DOCX" buttons, plus per-chapter "Preview" and "Export" actions.
+- `chapters.translated_content` migration (idempotent `ALTER TABLE`).
+
+---
+
 ## [1.2] — 2026-08-14
 
 ### Added

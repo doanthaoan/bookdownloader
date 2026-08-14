@@ -96,6 +96,7 @@ class NovelDatabase:
             "ALTER TABLE books ADD COLUMN source_file TEXT",
             "ALTER TABLE books ADD COLUMN is_translated INTEGER DEFAULT 0",
             "ALTER TABLE chapters ADD COLUMN chapter_content TEXT",
+            "ALTER TABLE chapters ADD COLUMN translated_content TEXT",
         ]
         for sql in migrations:
             try:
@@ -346,6 +347,23 @@ class NovelDatabase:
         """Store translated content for a chapter."""
         conn = self._get_connection()
         conn.execute("UPDATE chapters SET chapter_content = ? WHERE id = ?", (chapter_content, chapter_id))
+        conn.commit()
+
+    def update_chapter_title(self, chapter_id: int, chapter_title: str):
+        """Store the cleaned page title for a chapter (used when exporting the DOCX)."""
+        conn = self._get_connection()
+        conn.execute("UPDATE chapters SET chapter_title = ? WHERE id = ?", (chapter_title, chapter_id))
+        conn.commit()
+
+    def update_chapter_translated_content(self, chapter_id: int, translated_content: str):
+        """Store the Vietnamese translation for a chapter.
+
+        Format: "<viet_title>\\n<viet_body>" so the DOCX exporter can split the
+        heading from the body without a separate column. Corrections are NOT
+        applied here — they are applied at DOCX export time.
+        """
+        conn = self._get_connection()
+        conn.execute("UPDATE chapters SET translated_content = ? WHERE id = ?", (translated_content, chapter_id))
         conn.commit()
 
     def get_book_corrections(self, book_id: int) -> List[Dict]:

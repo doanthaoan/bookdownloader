@@ -11,6 +11,9 @@ const BookDetails = ({ bookId, onBack }) => {
   const [progress, setProgress] = useState(null);
   const [redownloadDocxExists, setRedownloadDocxExists] = useState(false);
   const [retranslateDocxExists, setRetranslateDocxExists] = useState(false);
+  const [correctedDocxExists, setCorrectedDocxExists] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [exporting, setExporting] = useState(false);
   const [tags, setTags] = useState([]);
   const [maxChapters, setMaxChapters] = useState('');
   const pollingRef = useRef(null);
@@ -35,17 +38,19 @@ const BookDetails = ({ bookId, onBack }) => {
 
   const fetchData = async () => {
     try {
-      const [bookRes, chaptersRes, progressRes, tagsRes, correctionsRes] = await Promise.all([
+      const [bookRes, chaptersRes, progressRes, tagsRes, correctionsRes, correctedRes] = await Promise.all([
         bookApi.getOne(bookId),
         bookApi.getChapters(bookId),
         bookApi.getProgress(bookId).catch(() => ({ data: { active: false } })),
         bookApi.bookTags(bookId).catch(() => ({ data: { tags: [] } })),
         translateApi.corrections(bookId).catch(() => []),
+        bookApi.exportCorrectedDocxInfo(bookId).catch(() => ({ data: { exists: false } })),
       ]);
       setBook(bookRes.data);
       setChapters(chaptersRes.data);
       setTags(tagsRes.data.tags);
       setCorrections(correctionsRes.data || correctionsRes || []);
+      setCorrectedDocxExists(correctedRes.data.exists);
       setForm({
         title: bookRes.data.title || '',
         author: bookRes.data.author || '',
@@ -266,6 +271,43 @@ const BookDetails = ({ bookId, onBack }) => {
       fetchData();
     } catch (err) {
       alert('Cancel failed: ' + err.message);
+    }
+  };
+
+  const handleExportCorrected = async () => {
+    if (!confirm('Export the whole book as a corrected DOCX? Corrections are applied now; the database is not modified.')) return;
+    try {
+      setExporting(true);
+      const res = await bookApi.exportCorrected(bookId, []);
+      setCorrectedDocxExists(true);
+      alert(`Corrected DOCX exported: ${res.data.file_name}`);
+    } catch (err) {
+      alert('Export failed: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExportChapterCorrected = async (chapterId) => {
+    if (!confirm('Export ONLY this chapter into the corrected DOCX? (This replaces the whole-book corrected file.)')) return;
+    try {
+      setExporting(true);
+      const res = await bookApi.exportCorrected(bookId, [chapterId]);
+      setCorrectedDocxExists(true);
+      alert(`Chapter exported into: ${res.data.file_name}`);
+    } catch (err) {
+      alert('Export failed: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handlePreviewCorrection = async (chapterId) => {
+    try {
+      const res = await bookApi.previewCorrection(bookId, chapterId);
+      setPreview(res.data);
+    } catch (err) {
+      alert('Preview failed: ' + (err.response?.data?.detail || err.message));
     }
   };
 
@@ -667,8 +709,42 @@ const BookDetails = ({ bookId, onBack }) => {
           )}
             </>
           )}
+          {completedChapters > 0 && (
+            <button onClick={handleExportCorrected} disabled={exporting}
+              className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition"
+              title="Render the book from stored content, applying corrections now">
+              Export Corrected
+            </button>
+          )}
+          {correctedDocxExists && (
+            <a href={bookApi.exportCorrectedDocxUrl(bookId)} target="_blank"
+              className="bg-emerald-700 hover:bg-emerald-800 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
+              Open Corrected DOCX
+            </a>
+          )}
         </div>
       </div>
+
+      {preview && (
+        <div className="bg-white rounded-lg shadow p-6 mb-6 border-2 border-emerald-200">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-lg font-semibold">
+              Correction preview — Chương {preview.chapter_order}
+            </h2>
+            <button onClick={() => setPreview(null)}
+              className="text-sm text-gray-500 hover:text-gray-700 transition">
+              Close
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 mb-3">
+            This is how the chapter will look after corrections are applied. Nothing is saved.
+          </p>
+          <h3 className="text-base font-semibold text-gray-800 mb-3">{preview.title}</h3>
+          <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line max-h-96 overflow-y-auto">
+            {preview.content || '(no content stored)'}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg shadow overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
@@ -681,7 +757,7 @@ const BookDetails = ({ bookId, onBack }) => {
               <th className="px-6 py-4 w-16">#</th>
               <th className="px-6 py-4">Title</th>
               <th className="px-6 py-4 w-32">Status</th>
-              <th className="px-6 py-4 w-28">Action</th>
+              <th className="px-6 py-4">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -698,6 +774,18 @@ const BookDetails = ({ bookId, onBack }) => {
                   </span>
                 </td>
                 <td className="px-6 py-3">
+                  {ch.download_status === 'completed' && (
+                    <>
+                      <button onClick={() => handlePreviewCorrection(ch.id)}
+                        className="text-xs bg-emerald-100 hover:bg-emerald-200 text-emerald-700 px-2 py-1 rounded transition">
+                        Preview
+                      </button>
+                      <button onClick={() => handleExportChapterCorrected(ch.id)}
+                        className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded transition ml-1">
+                        Export
+                      </button>
+                    </>
+                  )}
                   {!isTranslated && ch.download_status === 'failed' && (
                     <button onClick={() => handleChapterDownload(ch.id)}
                       className="text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 px-2 py-1 rounded transition">
@@ -706,7 +794,7 @@ const BookDetails = ({ bookId, onBack }) => {
                   )}
                   {!isTranslated && ch.download_status === 'completed' && (
                     <button onClick={() => handleChapterDownload(ch.id)}
-                      className="text-xs bg-purple-100 hover:bg-purple-200 text-purple-700 px-2 py-1 rounded transition">
+                      className="text-xs bg-purple-100 hover:bg-purple-200 text-purple-700 px-2 py-1 rounded transition ml-1">
                       Redownload
                     </button>
                   )}

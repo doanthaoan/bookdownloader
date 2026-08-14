@@ -15,14 +15,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
-from docx import Document
-from docx.shared import Inches
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from colorama import Fore, init
 from app.config import TRUYENWIKI, get_cookies, get_user_agent
 from app.database import get_database
 from app.services.text_cleaner import TextCleaner
-from app.services.translator import apply_corrections
+from app.services.docx_exporter import build_book_docx
 
 # Initialize colorama
 init(autoreset=True)
@@ -111,9 +108,6 @@ class TruyenWikiDownloader:
         self.driver = self._setup_selenium()
         self._inject_cookies()
         
-        # Load existing DOCX if it exists to resume progress
-        self.docx_doc = self._load_existing_docx()
-        
         # Get chapters from database instead of HTML file
         self.chapters = self.db.get_chapters_by_book(self.book_id)
         if not self.chapters:
@@ -124,50 +118,6 @@ class TruyenWikiDownloader:
         """Ensure required directories exist"""
         for path in [self.book_path, self.logs_path]:
             os.makedirs(path, exist_ok=True)
-    
-    def _load_existing_docx(self):
-        """Load existing DOCX file if it exists, or create a fresh one with the book title."""
-        fresh = False
-        if os.path.exists(self.output_docx):
-            print(f"{Fore.CYAN}Found existing DOCX file. Resuming progress...")
-            doc = Document(self.output_docx)
-        else:
-            doc = Document()
-            fresh = True
-
-        if fresh:
-            # Remove the default empty paragraph
-            for p in list(doc.paragraphs):
-                p._element.getparent().remove(p._element)
-            # Add cover image first (if available)
-            cover_path = self._find_cover_image()
-            if cover_path:
-                img_p = doc.add_paragraph()
-                img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run = img_p.add_run()
-                run.add_picture(str(cover_path), width=Inches(3.5))
-            # Then title and author
-            doc.add_heading(self.book['title'], level=0)
-            if self.book.get('author'):
-                p = doc.add_paragraph()
-                p.alignment = 0  # left
-                run_label = p.add_run('Tác giả: ')
-                run_label.italic = True
-                run_author = p.add_run(self.book['author'])
-                run_author.bold = True
-                run_author.italic = True
-
-        return doc
-
-    def _find_cover_image(self) -> str | None:
-        """Find the cover image file on disk matching this book."""
-        base_dir = os.path.dirname(self.output_docx)
-        basename = os.path.splitext(os.path.basename(self.output_docx))[0]
-        for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
-            path = os.path.join(base_dir, f"{basename}{ext}")
-            if os.path.exists(path):
-                return path
-        return None
     
     def _setup_selenium(self):
         """Setup Selenium WebDriver with appropriate options"""
@@ -245,24 +195,27 @@ class TruyenWikiDownloader:
         if not content_tag:
             raise Exception("Could not find content-body-wrapper after waiting.")
 
-        # Apply global Text Cleaning rules first, then this book's per-book corrections
-        corrections = self.db.get_book_corrections(self.book_id)
-        title_text = apply_corrections(self.cleaner.clean(title_tag.get_text()), corrections)
-        
-        # Save to HTML (Appended mode)
-        # with open(self.output_html, 'a', encoding='utf-8') as html_file:
-        #     if os.path.getsize(self.output_html) == 0:
-        #         html_file.write('<html><body>\n')
-        #     html_file.write(f"<h1>{title_text}</h1>\n")
-        #     html_file.write(str(content_tag))
-        
-        # Add to DOCX object
-        self.docx_doc.add_heading(title_text, level=1)
-        for p in content_tag.find_all('p'):
-            cleaned = self.cleaner.clean(p.get_text())
-            self.docx_doc.add_paragraph(apply_corrections(cleaned, corrections))
+        # Apply ONLY global Text Cleaning rules here. Per-book corrections are
+        # applied at DOCX export time so they are idempotent and can be re-run.
+        # The DB is the source of truth; the DOCX is rendered from it at the end.
+        title_text = self.cleaner.clean(title_tag.get_text()).strip()
+        cleaned_paragraphs = [
+            self.cleaner.clean(p.get_text()).strip()
+            for p in content_tag.find_all('p')
+            if p.get_text().strip()
+        ]
+
+        self.db.update_chapter_title(chapter['id'], title_text)
+        self.db.update_chapter_content(chapter['id'], "\n\n".join(cleaned_paragraphs))
 
         return title_text, full_url
+
+    def _export_docx(self, output_path: str):
+        """Render the book DOCX from DB content (source of truth), applying
+        per-book corrections at render time."""
+        chapters = self.db.get_chapters_by_book(self.book_id)
+        corrections = self.db.get_book_corrections(self.book_id)
+        build_book_docx(self.book, chapters, corrections, output_path)
 
     def run(self, max_chapters=None):
         """Main download process.
@@ -347,11 +300,6 @@ class TruyenWikiDownloader:
                     success_count += 1
                     self._success_count = success_count
                     
-                    # Save checkpoint every save_interval chapters
-                    if self.save_interval and success_count % self.save_interval == 0:
-                        self.docx_doc.save(self.output_docx)
-                        print(f"{Fore.CYAN}--- Checkpoint: DOCX saved automatically ---")
-                    
                     print(f"{Fore.GREEN}Success: {Fore.WHITE}{title} "
                           f"({index}/{len(chapters_to_process)})")
                     
@@ -370,9 +318,6 @@ class TruyenWikiDownloader:
                     fail_count += 1
                     self._fail_count = fail_count
                     print(f"{Fore.RED}Failed: {chapter['chapter_title']} | Error: {e}")
-                    
-                    # Save DOCX after failure to preserve progress
-                    self.docx_doc.save(self.output_docx)
                 
                 # Add delay between chapters to be respectful to the server
                 if index < len(chapters_to_process):  # No delay after last chapter
@@ -380,8 +325,13 @@ class TruyenWikiDownloader:
                     time.sleep(delay)
 
         finally:
-            # Save docx before anything else (critical on interrupt/cancel)
-            self.docx_doc.save(self.output_docx)
+            # Render the DOCX from DB content (source of truth). Runs on success,
+            # cancel, or exception so whatever was downloaded is preserved.
+            try:
+                self._export_docx(self.output_docx)
+                print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
+            except Exception as e:
+                print(f"{Fore.RED}DOCX export failed: {e}")
 
             # Always close the browser window
             self.driver.quit()
@@ -473,9 +423,6 @@ class TruyenWikiDownloader:
                     success_count += 1
                     self._success_count = success_count
 
-                    if self.save_interval and success_count % self.save_interval == 0:
-                        self.docx_doc.save(self.output_docx)
-
                     print(f"{Fore.GREEN}Redownload success: {title} ({index}/{len(chapters_to_process)})")
 
                 except Exception as e:
@@ -487,13 +434,16 @@ class TruyenWikiDownloader:
                     fail_count += 1
                     self._fail_count = fail_count
                     print(f"{Fore.RED}Redownload failed: {chapter['chapter_title']} | Error: {e}")
-                    self.docx_doc.save(self.output_docx)
 
                 if index < len(chapters_to_process):
                     time.sleep(random.randint(2, 4))
 
         finally:
-            self.docx_doc.save(self.output_docx)
+            try:
+                self._export_docx(self.output_docx)
+                print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
+            except Exception as e:
+                print(f"{Fore.RED}DOCX export failed: {e}")
             self.driver.quit()
 
         total_duration = time.time() - start_total
@@ -536,7 +486,6 @@ class TruyenWikiDownloader:
                 file_path=f"{self.book_name}_redownload.docx"
             )
             self._success_count = 1
-            self.docx_doc.save(self.output_docx)
             print(f"{Fore.GREEN}Single download success: {title}")
 
         except Exception as e:
@@ -546,11 +495,15 @@ class TruyenWikiDownloader:
                 chapter_id=chapter['id'], status='failed', error_message=str(e)
             )
             self._fail_count = 1
-            self.docx_doc.save(self.output_docx)
             print(f"{Fore.RED}Single download failed: {chapter['chapter_title']} | Error: {e}")
             raise
 
         finally:
+            try:
+                self._export_docx(self.output_docx)
+                print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
+            except Exception as e:
+                print(f"{Fore.RED}DOCX export failed: {e}")
             self.driver.quit()
             unregister_download(self.book_id)
 

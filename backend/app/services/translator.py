@@ -13,9 +13,6 @@ import requests
 from pathlib import Path
 from urllib.parse import urlparse
 
-from docx import Document
-from docx.shared import Inches
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from colorama import Fore, init
 
 from app.config import TRUYENWIKI, get_user_agent
@@ -501,45 +498,32 @@ class Translator:
             print(f"{Fore.RED}Translation method '{method}' not usable: {e}")
             return False
 
-    def _build_docx(self, book: dict, output_docx: Path) -> Document:
-        """Load an existing DOCX to resume, or create a fresh one with cover/title/author."""
-        if output_docx.exists():
-            print(f"{Fore.CYAN}Found existing DOCX. Resuming...")
-            return Document(str(output_docx))
-        doc = Document()
-        for p in list(doc.paragraphs):
-            p._element.getparent().remove(p._element)
-        cover_path = self._find_cover_image(output_docx.parent, book["id"], book["seo_title_basic"])
-        if cover_path:
-            img_p = doc.add_paragraph()
-            img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = img_p.add_run()
-            run.add_picture(str(cover_path), width=Inches(3.5))
-        doc.add_heading(book["title"], level=0)
-        if book.get("author"):
-            p = doc.add_paragraph()
-            run_label = p.add_run("Tác giả: ")
-            run_label.italic = True
-            run_author = p.add_run(book["author"])
-            run_author.bold = True
-            run_author.italic = True
-        return doc
+    def _export_docx(self, book: dict, output_docx: Path):
+        """Render the book DOCX from DB content (source of truth), applying
+        per-book corrections at render time. Idempotent — safe to call any time
+        after chapters have been translated/downloaded."""
+        from app.services.docx_exporter import build_book_docx
+        chapters = self.db.get_chapters_by_book(book["id"])
+        corrections = self.db.get_book_corrections(book["id"])
+        return build_book_docx(book, chapters, corrections, output_docx)
 
     def _translate_run(self, book_id: int, method: str, chapters_to_process: list,
                        output_docx: Path, task: TranslateTask):
-        """Shared loop: translate each chapter, append to DOCX, update statuses.
-        Original chapter content is NEVER overwritten — translated text only goes to DOCX."""
-        corrections = self.db.get_book_corrections(book_id)
+        """Shared loop: translate each chapter, save the RAW (uncorrected)
+        translation to the DB (source of truth), and update statuses.
+        Per-book corrections are applied later at DOCX export time (idempotent
+        re-renders), so they can be edited and previewed without re-translating.
+        Original Chinese chapter content is NEVER overwritten."""
         total = len(chapters_to_process)
         task.set(total=total, message="Probing translation method...")
 
         if not self._probe_method(method):
+            msg = f"Translation method '{method}' not usable."
             self.db.update_book_status(book_id, "failed")
-            task.set(active=False, message=f"Translation method '{method}' failed.")
-            return
+            task.set(active=False, message=msg)
+            raise RuntimeError(msg)
         task.set(message="Probe OK, starting chapters...")
 
-        doc = self._build_docx(self.db.get_book(book_id), output_docx)
         success_count = 0
         fail_count = 0
 
@@ -569,14 +553,10 @@ class Translator:
                               f"translating content separately.")
                         translated_content = self.translate(raw_content, method=method)
 
-                    translated_title = apply_corrections(translated_title, corrections)
-                    translated_content = apply_corrections(translated_content, corrections)
-
-                    doc.add_heading(translated_title, level=1)
-                    for para in translated_content.split("\n"):
-                        para = para.strip()
-                        if para:
-                            doc.add_paragraph(para)
+                    # Store the RAW (uncorrected) translation; corrections are
+                    # applied at DOCX export time so they are idempotent.
+                    self.db.update_chapter_translated_content(
+                        ch["id"], f"{translated_title}\n{translated_content}")
 
                     self.db.update_chapter_status(ch["id"], "completed", file_path=output_docx.name)
                     success_count += 1
@@ -586,7 +566,7 @@ class Translator:
                     # Cloudflare needs a new session. Mark the CURRENT chapter
                     # failed and STOP — do NOT move on to the next chapter (it
                     # would fail too). The user refreshes the cookie and clicks
-                    # 'Continue', which retries failed chapters into the DOCX.
+                    # 'Continue', which retries failed chapters.
                     self.db.update_chapter_status(ch["id"], "failed", error_message=str(e))
                     fail_count += 1
                     task.set(fail_count=fail_count,
@@ -602,19 +582,9 @@ class Translator:
                     task.set(fail_count=fail_count, message=f"Failed chapter {ch['chapter_order']}: {e}")
                     print(f"{Fore.RED}Chapter {ch['chapter_order']} failed: {e}")
 
-                if idx % 10 == 0:
-                    try:
-                        doc.save(output_docx)
-                        print(f"{Fore.CYAN}--- Checkpoint: DOCX saved ---")
-                    except Exception as e:
-                        print(f"{Fore.RED}Checkpoint save failed: {e}")
-
                 time.sleep(random.uniform(0.5, 1.5))
         finally:
-            try:
-                doc.save(output_docx)
-            except Exception as e:
-                print(f"{Fore.RED}Final save failed: {e}")
+            pass
 
         return success_count, fail_count
 
@@ -639,11 +609,21 @@ class Translator:
         register_task(task)
         self.db.update_book_status(book_id, "in_progress", total_chapters=book.get("total_chapters"))
 
+        base_dir = Path(__file__).parent.parent.parent
+        save_dir = base_dir / (self.db.get_setting("book_path") or TRUYENWIKI["book_path"])
+        os.makedirs(save_dir, exist_ok=True)
+        output_docx = save_dir / f"{book_id}_{book['seo_title_basic']}.docx"
+
         all_chapters = self.db.get_chapters_by_book(book_id)
         chapters_to_process = [c for c in all_chapters if c["download_status"] == "pending"]
 
         if not chapters_to_process:
             print(f"{Fore.GREEN}All chapters already translated for '{book['title']}'!")
+            try:
+                self._export_docx(book, output_docx)
+                print(f"{Fore.CYAN}--- DOCX exported: {output_docx.name} ---")
+            except Exception as e:
+                print(f"{Fore.RED}DOCX export failed: {e}")
             self.close()
             unregister_task(book_id)
             task.set(active=False, message="All chapters already translated.")
@@ -659,17 +639,17 @@ class Translator:
             limited = True
             print(f"🔢 Session limited to {max_chapters} chapters.")
 
-        base_dir = Path(__file__).parent.parent.parent
-        save_dir = base_dir / (self.db.get_setting("book_path") or TRUYENWIKI["book_path"])
-        os.makedirs(save_dir, exist_ok=True)
-        output_docx = save_dir / f"{book_id}_{book['seo_title_basic']}.docx"
-
         try:
             success, fail = self._translate_run(book_id, method, chapters_to_process, output_docx, task)
         except Exception as e:
             print(f"{Fore.RED}Translation run failed: {e}")
             task.set(message=f"Translation run failed: {e}")
             self.db.update_book_status(book_id, "failed")
+            try:
+                self._export_docx(book, output_docx)
+                print(f"{Fore.CYAN}--- DOCX exported (partial): {output_docx.name} ---")
+            except Exception as e2:
+                print(f"{Fore.RED}DOCX export failed: {e2}")
             self.close()
             unregister_task(book_id)
             return
@@ -695,6 +675,11 @@ class Translator:
         self.db.update_book_status(book_id, new_status, downloaded_chapters=total_downloaded)
         task.set(message=f"Finished: {success}/{total_chapters} chapters translated ({new_status})")
         task.set(active=False)
+        try:
+            self._export_docx(book, output_docx)
+            print(f"{Fore.CYAN}--- DOCX exported: {output_docx.name} ---")
+        except Exception as e:
+            print(f"{Fore.RED}DOCX export failed: {e}")
         self.close()
         unregister_task(book_id)
 
@@ -717,20 +702,25 @@ class Translator:
         register_task(task)
         self.db.update_book_status(book_id, "in_progress", total_chapters=book.get("total_chapters"))
 
+        base_dir = Path(__file__).parent.parent.parent
+        save_dir = base_dir / (self.db.get_setting("book_path") or TRUYENWIKI["book_path"])
+        os.makedirs(save_dir, exist_ok=True)
+        output_docx = save_dir / f"{book_id}_{book['seo_title_basic']}_retranslate.docx"
+
         all_chapters = self.db.get_chapters_by_book(book_id)
         chapters_to_process = [c for c in all_chapters if c["download_status"] == "failed"]
 
         if not chapters_to_process:
             print(f"{Fore.GREEN}No failed chapters to re-translate.")
+            try:
+                self._export_docx(book, output_docx)
+                print(f"{Fore.CYAN}--- DOCX exported: {output_docx.name} ---")
+            except Exception as e:
+                print(f"{Fore.RED}DOCX export failed: {e}")
             self.close()
             unregister_task(book_id)
             task.set(active=False, message="No failed chapters to re-translate.")
             return
-
-        base_dir = Path(__file__).parent.parent.parent
-        save_dir = base_dir / (self.db.get_setting("book_path") or TRUYENWIKI["book_path"])
-        os.makedirs(save_dir, exist_ok=True)
-        output_docx = save_dir / f"{book_id}_{book['seo_title_basic']}_retranslate.docx"
 
         try:
             success, fail = self._translate_run(book_id, method, chapters_to_process, output_docx, task)
@@ -738,6 +728,11 @@ class Translator:
             print(f"{Fore.RED}Re-translation run failed: {e}")
             task.set(message=f"Re-translation run failed: {e}")
             self.db.update_book_status(book_id, "failed")
+            try:
+                self._export_docx(book, output_docx)
+                print(f"{Fore.CYAN}--- DOCX exported (partial): {output_docx.name} ---")
+            except Exception as e2:
+                print(f"{Fore.RED}DOCX export failed: {e2}")
             self.close()
             unregister_task(book_id)
             return
@@ -757,16 +752,13 @@ class Translator:
         self.db.update_book_status(book_id, new_status, downloaded_chapters=downloaded)
         task.set(message=f"Finished re-translation: {success}/{len(chapters_to_process)} ({new_status})")
         task.set(active=False)
+        try:
+            self._export_docx(book, output_docx)
+            print(f"{Fore.CYAN}--- DOCX exported: {output_docx.name} ---")
+        except Exception as e:
+            print(f"{Fore.RED}DOCX export failed: {e}")
         self.close()
         unregister_task(book_id)
-
-    def _find_cover_image(self, save_dir, book_id: int, seo_basic: str) -> str | None:
-        basename = f"{book_id}_{seo_basic}"
-        for ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
-            path = save_dir / f"{basename}{ext}"
-            if path.exists():
-                return str(path)
-        return None
 
 
 def translate_book(book_id: int, method: str = "api", run_async: bool = True,

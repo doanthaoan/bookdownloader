@@ -9,6 +9,8 @@ from pathlib import Path
 from app.database import get_database
 from app.services.extractor import ChapterListExtractor, extract_chapters_for_book
 from app.services.downloader import download_book, cancel_download, get_download_progress, redownload_book, download_single_chapter
+from app.services.docx_exporter import build_book_docx, chapter_text
+from app.services.translator import apply_corrections
 from app.config import TRUYENWIKI
 
 router = APIRouter()
@@ -290,6 +292,85 @@ async def get_docx_info(book_id: int):
         "file_name": file_name,
         "file_path": str(file_path.resolve()) if file_path.exists() else None,
         "size": file_path.stat().st_size if file_path.exists() else 0,
+    }
+
+@router.post("/{book_id}/export-corrected")
+async def export_corrected(book_id: int, chapter_ids: List[int] = Body(default=[])):
+    """Render a corrected DOCX from DB content (source of truth), applying per-book
+    corrections at render time. Nothing in the DB is modified. chapter_ids: optional
+    list of chapter ids to include (empty = whole book).
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    chapters = db.get_chapters_by_book(book_id)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="No chapters to export.")
+    corrections = db.get_book_corrections(book_id)
+    file_name = f"{book_id}_{book['seo_title_basic']}_corrected.docx"
+    base_dir = Path(__file__).parent.parent.parent
+    file_path = base_dir / TRUYENWIKI['book_path'] / file_name
+    build_book_docx(book, chapters, corrections, file_path, chapter_ids=chapter_ids or None)
+    return {
+        "exists": True,
+        "file_name": file_name,
+        "file_path": str(file_path.resolve()),
+        "size": file_path.stat().st_size,
+        "chapter_count": len(chapter_ids) if chapter_ids else len(chapters),
+    }
+
+@router.get("/{book_id}/export-corrected-docx")
+async def get_export_corrected_docx(book_id: int):
+    """Download the corrected DOCX file."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    file_name = f"{book_id}_{book['seo_title_basic']}_corrected.docx"
+    base_dir = Path(__file__).parent.parent.parent
+    file_path = base_dir / TRUYENWIKI['book_path'] / file_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Corrected DOCX file not found. Export it first.")
+    return FileResponse(
+        path=str(file_path),
+        filename=file_name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+@router.get("/{book_id}/export-corrected-docx-info")
+async def get_export_corrected_docx_info(book_id: int):
+    """Check if the corrected DOCX file exists and return its info."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    file_name = f"{book_id}_{book['seo_title_basic']}_corrected.docx"
+    base_dir = Path(__file__).parent.parent.parent
+    file_path = base_dir / TRUYENWIKI['book_path'] / file_name
+    return {
+        "exists": file_path.exists(),
+        "file_name": file_name,
+        "file_path": str(file_path.resolve()) if file_path.exists() else None,
+        "size": file_path.stat().st_size if file_path.exists() else 0,
+    }
+
+@router.post("/{book_id}/preview-correction")
+async def preview_correction(book_id: int, chapter_id: int):
+    """Preview the corrected text of a single chapter. Rendered in memory only —
+    the result is NOT saved to the database or disk."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    chapter = next((c for c in db.get_chapters_by_book(book_id) if c["id"] == chapter_id), None)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    corrections = db.get_book_corrections(book_id)
+    title, content = chapter_text(chapter, bool(book.get("is_translated")))
+    title = apply_corrections(title, corrections)
+    content = apply_corrections(content, corrections)
+    return {
+        "chapter_id": chapter_id,
+        "chapter_order": chapter["chapter_order"],
+        "title": title,
+        "content": content,
     }
 
 @router.get("/{book_id}/cover")
