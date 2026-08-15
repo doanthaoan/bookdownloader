@@ -19,7 +19,7 @@ from colorama import Fore, init
 from app.config import TRUYENWIKI, get_cookies, get_user_agent
 from app.database import get_database
 from app.services.text_cleaner import TextCleaner
-from app.services.docx_exporter import build_book_docx
+from app.services.docx_exporter import build_book_docx, build_render_rules
 
 # Initialize colorama
 init(autoreset=True)
@@ -212,10 +212,10 @@ class TruyenWikiDownloader:
 
     def _export_docx(self, output_path: str):
         """Render the book DOCX from DB content (source of truth), applying
-        per-book corrections at render time."""
+        global cleaning (translated books) + per-book corrections at render time."""
         chapters = self.db.get_chapters_by_book(self.book_id)
-        corrections = self.db.get_book_corrections(self.book_id)
-        build_book_docx(self.book, chapters, corrections, output_path)
+        rules = build_render_rules(self.db, self.book)
+        build_book_docx(self.book, chapters, rules, output_path)
 
     def run(self, max_chapters=None):
         """Main download process.

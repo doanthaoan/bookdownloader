@@ -152,24 +152,6 @@ def parse_raw_file(path: str) -> dict:
     }
 
 
-def apply_corrections(text: str, corrections: list) -> str:
-    """Apply per-book find/replace corrections to translated text.
-
-    Matching is case-insensitive so a name at the start of a paragraph or
-    right after an opening quote (which Vietnamese capitalizes) still matches
-    the lower-cased find_text the user entered. The replacement text is used
-    verbatim (e.g. 'lộ khi' -> 'Lộ Thời').
-    """
-    for c in corrections:
-        if not c.get("enabled", True):
-            continue
-        find_text = c.get("find_text") or ""
-        replace_text = c.get("replace_text") or ""
-        if find_text:
-            text = re.sub(re.escape(find_text), lambda m: replace_text, text, flags=re.IGNORECASE)
-    return text
-
-
 class Translator:
     """Translates text using dichtienghoa API or web method."""
 
@@ -367,73 +349,90 @@ class Translator:
         driver.get(self.site)
 
         wait = WebDriverWait(driver, 30)
-        try:
-            input_el = wait.until(EC.presence_of_element_located((By.ID, "txtOriginal")))
-        except Exception:
-            # Cloudflare challenge present — try to auto-refresh the cookie once
-            # (the user may need to click the challenge). On success the driver is
-            # ALREADY on the loaded page, so we continue from there — no reload.
-            print(f"{Fore.YELLOW}[web] Cloudflare challenge detected. Attempting cookie refresh...")
-            if not self._maybe_refresh_cookies():
-                raise CloudflareBlockedError(
-                    "Translation site blocked (Cloudflare challenge) and cookie "
-                    "refresh limit reached. Update translate_cookies under Settings "
-                    "or click 'Continue' on the book."
-                )
+
+        # Outer loop: the page may load fine while the translate request itself is
+        # blocked (Cloudflare 403 on the AJAX call). When the click retries produce
+        # no output, refresh the Cloudflare cookie and retry the whole flow. Every
+        # refresh goes through _maybe_refresh_cookies (bounded by cookie_refresh_max),
+        # so the loop can never run forever.
+        while True:
             try:
                 input_el = wait.until(EC.presence_of_element_located((By.ID, "txtOriginal")))
             except Exception:
-                raise CloudflareBlockedError(
-                    "Translation site still blocked (Cloudflare challenge) after "
-                    "cookie refresh. Update translate_cookies under Settings or "
-                    "click 'Continue' on the book."
-                )
-        input_el.clear()
-        input_el.send_keys(text)
+                # Cloudflare challenge present — try to auto-refresh the cookie once
+                # (the user may need to click the challenge). On success the driver is
+                # ALREADY on the loaded page, so we continue from there — no reload.
+                print(f"{Fore.YELLOW}[web] Cloudflare challenge detected. Attempting cookie refresh...")
+                if not self._maybe_refresh_cookies():
+                    raise CloudflareBlockedError(
+                        "Translation site blocked (Cloudflare challenge) and cookie "
+                        "refresh limit reached. Update translate_cookies under Settings "
+                        "or click 'Continue' on the book."
+                    )
+                try:
+                    input_el = wait.until(EC.presence_of_element_located((By.ID, "txtOriginal")))
+                except Exception:
+                    raise CloudflareBlockedError(
+                        "Translation site still blocked (Cloudflare challenge) after "
+                        "cookie refresh. Update translate_cookies under Settings or "
+                        "click 'Continue' on the book."
+                    )
+            input_el.clear()
+            input_el.send_keys(text)
 
-        # Click the translate button (anchor with btnTranslateClick handler)
-        try:
-            btn = driver.find_element(By.CSS_SELECTOR, "a[onclick='btnTranslateClick()'], a[onclick=\"btnTranslateClick()\"]")
-        except Exception:
-            btn = driver.find_element(By.CSS_SELECTOR, "a.btn.cyan")
-
-        output_el = wait.until(EC.presence_of_element_located((By.ID, "txtTranslation")))
-
-        # Clicking too fast can result in no translation. Wait a moment before the
-        # first click, then retry the click (after a delay) if no result appears.
-        max_attempts = max(1, self.max_retries)
-        for attempt in range(1, max_attempts + 1):
-            if attempt == 1:
-                time.sleep(self.click_delay)
-            else:
-                print(f"{Fore.YELLOW}[web] attempt {attempt}: no result yet, "
-                      f"retrying click in {self.retry_delay}s...")
-                time.sleep(self.retry_delay)
-
+            # Click the translate button (anchor with btnTranslateClick handler)
             try:
-                btn.click()
-            except Exception as e:
-                print(f"{Fore.RED}[web] click failed on attempt {attempt}: {e}")
-                continue
+                btn = driver.find_element(By.CSS_SELECTOR, "a[onclick='btnTranslateClick()'], a[onclick=\"btnTranslateClick()\"]")
+            except Exception:
+                btn = driver.find_element(By.CSS_SELECTOR, "a.btn.cyan")
 
-            # Poll until the translation text appears
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                value = output_el.get_attribute("value") or ""
-                if value.strip():
-                    # Successful load also proves the current cookie works — refresh it
-                    try:
-                        self._save_cookies({c["name"]: c["value"] for c in driver.get_cookies()})
-                    except Exception:
-                        pass
-                    return value.strip()
-                time.sleep(1)
+            output_el = wait.until(EC.presence_of_element_located((By.ID, "txtTranslation")))
 
-        raise RuntimeError(
-            f"Web translation timed out after {max_attempts} click attempts "
-            f"({self.click_delay}s pre-click delay, {self.retry_delay}s retry delay, "
-            f"{self.max_retries} max retries)."
-        )
+            # Clicking too fast can result in no translation. Wait a moment before the
+            # first click, then retry the click (after a delay) if no result appears.
+            max_attempts = max(1, self.max_retries)
+            for attempt in range(1, max_attempts + 1):
+                if attempt == 1:
+                    time.sleep(self.click_delay)
+                else:
+                    print(f"{Fore.YELLOW}[web] attempt {attempt}: no result yet, "
+                          f"retrying click in {self.retry_delay}s...")
+                    time.sleep(self.retry_delay)
+
+                try:
+                    btn.click()
+                except Exception as e:
+                    print(f"{Fore.RED}[web] click failed on attempt {attempt}: {e}")
+                    continue
+
+                # Poll until the translation text appears
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    value = output_el.get_attribute("value") or ""
+                    if value.strip():
+                        # Successful load also proves the current cookie works — refresh it
+                        try:
+                            self._save_cookies({c["name"]: c["value"] for c in driver.get_cookies()})
+                        except Exception:
+                            pass
+                        return value.strip()
+                    time.sleep(1)
+
+            # All click attempts produced no result — the translate request itself is
+            # likely being blocked (Cloudflare 403 on the AJAX call, while the page
+            # loaded fine). Refresh the cookie and retry the whole flow. If the
+            # refresh fails (cookie_refresh_max reached / no fresh cookie), stop.
+            print(f"{Fore.YELLOW}[web] No result after {max_attempts} click attempts. "
+                  f"Refreshing Cloudflare cookie and retrying...")
+            if not self._maybe_refresh_cookies():
+                raise CloudflareBlockedError(
+                    f"Web translation blocked: the translate request returned no "
+                    f"result after {max_attempts} click attempts and the cookie "
+                    f"refresh limit ({self.cookie_refresh_max}) was reached. Update "
+                    f"translate_cookies under Settings or click 'Continue' on the book."
+                )
+            # Cookie refreshed — _refresh_cookies_from_browser left the driver on the
+            # freshly loaded page, so loop back and re-type / re-click the text.
 
     def translate(self, text: str, method: str = "api") -> str:
         """Translate a block of text. Falls back api -> web automatically.
@@ -500,12 +499,12 @@ class Translator:
 
     def _export_docx(self, book: dict, output_docx: Path):
         """Render the book DOCX from DB content (source of truth), applying
-        per-book corrections at render time. Idempotent — safe to call any time
-        after chapters have been translated/downloaded."""
-        from app.services.docx_exporter import build_book_docx
+        global cleaning + per-book corrections at render time. Idempotent — safe
+        to call any time after chapters have been translated/downloaded."""
+        from app.services.docx_exporter import build_book_docx, build_render_rules
         chapters = self.db.get_chapters_by_book(book["id"])
-        corrections = self.db.get_book_corrections(book["id"])
-        return build_book_docx(book, chapters, corrections, output_docx)
+        rules = build_render_rules(self.db, book)
+        return build_book_docx(book, chapters, rules, output_docx)
 
     def _translate_run(self, book_id: int, method: str, chapters_to_process: list,
                        output_docx: Path, task: TranslateTask):

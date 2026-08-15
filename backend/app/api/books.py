@@ -9,8 +9,9 @@ from pathlib import Path
 from app.database import get_database
 from app.services.extractor import ChapterListExtractor, extract_chapters_for_book
 from app.services.downloader import download_book, cancel_download, get_download_progress, redownload_book, download_single_chapter
-from app.services.docx_exporter import build_book_docx, chapter_text, diff_corrections
-from app.services.translator import apply_corrections
+from app.services.docx_exporter import (build_book_docx, build_render_rules,
+                                        apply_rules, apply_paragraphs,
+                                        diff_rules, diff_paragraphs, chapter_text)
 from app.config import TRUYENWIKI
 
 router = APIRouter()
@@ -310,7 +311,8 @@ async def export_corrected(book_id: int, chapter_ids: List[int] = Body(default=[
     file_name = f"{book_id}_{book['seo_title_basic']}_corrected.docx"
     base_dir = Path(__file__).parent.parent.parent
     file_path = base_dir / TRUYENWIKI['book_path'] / file_name
-    build_book_docx(book, chapters, corrections, file_path, chapter_ids=chapter_ids or None)
+    rules = build_render_rules(db, book)
+    build_book_docx(book, chapters, rules, file_path, chapter_ids=chapter_ids or None)
     return {
         "exists": True,
         "file_name": file_name,
@@ -362,15 +364,16 @@ async def preview_correction(book_id: int, chapter_id: int):
     chapter = next((c for c in db.get_chapters_by_book(book_id) if c["id"] == chapter_id), None)
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    corrections = db.get_book_corrections(book_id)
-    title, content = chapter_text(chapter, bool(book.get("is_translated")))
+    rules = build_render_rules(db, book)
+    is_translated = bool(book.get("is_translated"))
+    title, content = chapter_text(chapter, is_translated)
     return {
         "chapter_id": chapter_id,
         "chapter_order": chapter["chapter_order"],
-        "title": apply_corrections(title, corrections),
-        "content": apply_corrections(content, corrections),
-        "title_segments": diff_corrections(title, corrections),
-        "content_segments": diff_corrections(content, corrections),
+        "title": apply_rules(title, rules),
+        "content": apply_paragraphs(content, rules, preserve_newlines=is_translated),
+        "title_segments": diff_rules(title, rules),
+        "content_segments": diff_paragraphs(content, rules),
     }
 
 @router.get("/{book_id}/cover")

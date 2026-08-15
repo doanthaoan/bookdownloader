@@ -44,6 +44,11 @@ const BookDetails = ({ bookId, onBack }) => {
   // Per-book corrections
   const [corrections, setCorrections] = useState([]);
   const [correctionsOpen, setCorrectionsOpen] = useState(false);
+  const correctionsOpenRef = useRef(false);
+
+  useEffect(() => {
+    correctionsOpenRef.current = correctionsOpen;
+  }, [correctionsOpen]);
 
   useEffect(() => {
     if (!bookId) return;
@@ -66,7 +71,9 @@ const BookDetails = ({ bookId, onBack }) => {
       setBook(bookRes.data);
       setChapters(chaptersRes.data);
       setTags(tagsRes.data.tags);
-      setCorrections(correctionsRes.data || correctionsRes || []);
+      if (!correctionsOpenRef.current) {
+        setCorrections(correctionsRes.data || correctionsRes || []);
+      }
       setCorrectedDocxExists(correctedRes.data.exists);
       setForm({
         title: bookRes.data.title || '',
