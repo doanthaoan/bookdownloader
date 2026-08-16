@@ -5,6 +5,7 @@ from app.api.settings import router as settings_router
 from app.api.logs import router as logs_router
 from app.api.text_cleaning import router as text_cleaning_router
 from app.api.translate import router as translate_router
+from app.api.stats import router as stats_router
 from app.config import load_truyenwiki_config
 from app.services.downloader import cancel_all_downloads
 from app.services.translator import cancel_all_translations
@@ -25,6 +26,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
 app.include_router(logs_router, prefix="/api/logs", tags=["Logs"])
 app.include_router(text_cleaning_router, prefix="/api/text-cleaning", tags=["Text Cleaning"])
 app.include_router(translate_router, prefix="/api/translate", tags=["Translate"])
+app.include_router(stats_router, prefix="/api/stats", tags=["Stats"])
 
 @app.on_event("startup")
 async def startup():

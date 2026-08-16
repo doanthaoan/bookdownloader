@@ -67,6 +67,14 @@ export const textCleaningApi = {
   test: (chapterUrl) => api.post('/text-cleaning/test', null, { params: { chapter_url: chapterUrl } }),
 };
 
+export const statsApi = {
+  meta: () => api.get('/stats/meta'),
+  summary: (params) => api.get('/stats/summary', { params }),
+  requests: (params) => api.get('/stats/requests', { params }),
+  daily: (params) => api.get('/stats/daily', { params }),
+  limitEstimate: (params) => api.get('/stats/limit-estimate', { params }),
+};
+
 export const translateApi = {
   prepare: () => api.get('/translate/prepare'),
   check: () => api.get('/translate/check'),

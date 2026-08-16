@@ -12,6 +12,21 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.4] — 2026-08-15
+
+### Added
+
+- **Request statistics** — every site request is now recorded in a new `request_logs` table and shown on a Statistics page (`/api/stats`):
+  - Logged types: `chapter` (download), `book_page`, `chapter_list`, `cover_image`, `book_added`, `book_extract`, `book_download`, `translate_api`, `translate_web` — each with status (success/failed), access type, domain, URL, book/chapter, duration, and error.
+  - Filters: date range, request type, status, access type (session/non-session), domain. Aggregates: totals, success/failed, by type, by access, and a daily bar chart.
+  - Paginated request log table with book titles.
+- **Non-session (free) download mode** — new global setting `request_session_mode` (`session` or `non_session`). In non-session mode the downloader **skips cookie injection**, so chapter requests count against the site's separate free/guest quota instead of the logged-in user's. Lets you double your daily chapter budget by mixing both modes. Each chapter request is tagged with its access type in the log (prepares for multi-profile in v2).
+- **Daily chapter-request limits & alerts** — new settings `chapter_limit_session` / `chapter_limit_nonsession` (0 = no limit). The Statistics page shows today's chapter usage vs the limit per access type with a colored bar (green <70%, amber 70–89%, red ≥90%/at-limit) and "N remaining today".
+- **Limit estimator** — pick a look-back window (N days) and an access type; the app computes the per-day chapter-request counts and suggests **max daily count** as the limit, with a one-click "Apply max as limit" button (writes back to the limit setting).
+- Settings page: new **Request Settings** section for the access mode and both limits.
+
+---
+
 ## [1.3] — 2026-08-15
 
 ### Added
