@@ -382,6 +382,51 @@ const Settings = () => {
           </div>
         </section>
 
+      {/* Request Settings Section */}
+        <section className="bg-white rounded-lg shadow p-6">
+          <h2 className="text-lg font-semibold border-b pb-3 mb-4">Request Settings</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Choose how chapter downloads access the site. <b>Session</b> injects your login
+            cookies; <b>Non-session</b> downloads as a free/guest visitor (no cookies). The
+            site keeps separate daily request quotas per access type, so you can mix both to
+            get more chapter requests per day. The daily limits below power the alert colors
+            and "remaining today" counter on the Statistics page (0 = no limit configured).
+            Use the estimator on the Statistics page to derive limits from your own history.
+            Changes are saved immediately.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="flex flex-col gap-1.5 p-3 border rounded-md">
+              <span className="text-sm font-medium text-gray-700">request_session_mode</span>
+              <select
+                className="border rounded px-2 py-1.5 text-sm w-full"
+                value={(config.db_settings.find(s => s.key === 'request_session_mode') || {}).value || 'session'}
+                onChange={e => handleSettingChange('request_session_mode', e.target.value)}
+              >
+                <option value="session">session (logged-in cookies)</option>
+                <option value="non_session">non_session (free, no cookies)</option>
+              </select>
+              <p className="text-xs text-gray-400">Applies to chapter downloads (and the resulting DOCX exports).</p>
+            </div>
+            {['chapter_limit_session', 'chapter_limit_nonsession'].map(key => {
+              const setting = config.db_settings.find(s => s.key === key);
+              if (!setting) return null;
+              return (
+                <div key={key} className="flex flex-col gap-1.5 p-3 border rounded-md">
+                  <span className="text-sm font-medium text-gray-700">{key}</span>
+                  <input
+                    className="border rounded px-2 py-1.5 text-sm w-full"
+                    type="number"
+                    min="0"
+                    value={setting.value}
+                    onChange={e => handleSettingChange(key, e.target.value)}
+                  />
+                  <p className="text-xs text-gray-400">{setting.description}</p>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
       </div>
     </Layout>
   );

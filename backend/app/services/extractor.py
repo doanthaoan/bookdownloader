@@ -35,17 +35,26 @@ def download_cover_image(book_id: int, seo_title_basic: str, image_url: str, sav
     """Download cover image and return the local filename, or None on failure."""
     if not image_url:
         return None
+    db = get_database()
+    domain_host = urlparse(TRUYENWIKI['book_domain']).hostname or 'wikicv.org'
     ext = os.path.splitext(image_url.split('?')[0])[1] or '.jpg'
     filename = f"{book_id}_{seo_title_basic}{ext}"
     filepath = os.path.join(save_dir, filename)
+    t0 = time.time()
     try:
         r = requests.get(image_url, timeout=15)
         r.raise_for_status()
         with open(filepath, 'wb') as f:
             f.write(r.content)
+        db.log_request("cover_image", "success", session_type="non_session",
+                       domain=domain_host, url=image_url, book_id=book_id,
+                       duration_ms=int((time.time() - t0) * 1000))
         print(f"🖼️ Cover image saved: {filepath}")
         return filename
     except Exception as e:
+        db.log_request("cover_image", "failed", session_type="non_session",
+                       domain=domain_host, url=image_url, book_id=book_id,
+                       error=str(e), duration_ms=int((time.time() - t0) * 1000))
         print(f"⚠️ Failed to download cover image: {e}")
         return None
 
@@ -69,6 +78,8 @@ class ChapterListExtractor:
     def __init__(self):
         self.driver = None
         self.db = get_database()
+        self.domain_host = urlparse(TRUYENWIKI['book_domain']).hostname or 'wikicv.org'
+        self.session_type = 'session'  # extraction always uses the logged-in cookies
         
     def _setup_selenium(self):
         """Setup Selenium WebDriver with appropriate options"""
@@ -116,6 +127,7 @@ class ChapterListExtractor:
             self._inject_cookies()
 
         info = {}
+        t0 = time.time()
         try:
             self.driver.get(book_url)
             time.sleep(3)
@@ -182,7 +194,13 @@ class ChapterListExtractor:
                         info['last_update_date'] = span.get_text(strip=True)
 
             print(f"📖 Book info scraped: author={info.get('author')}, status={info.get('book_web_status')}")
+            self.db.log_request("book_page", "success", session_type=self.session_type,
+                                domain=self.domain_host, url=book_url,
+                                duration_ms=int((time.time() - t0) * 1000))
         except Exception as e:
+            self.db.log_request("book_page", "failed", session_type=self.session_type,
+                                domain=self.domain_host, url=book_url, error=str(e),
+                                duration_ms=int((time.time() - t0) * 1000))
             print(f"❌ Failed to scrape book info: {e}")
 
         return info
@@ -199,6 +217,7 @@ class ChapterListExtractor:
             self.driver = self._setup_selenium()
             self._inject_cookies()
         
+        t0 = time.time()
         try:
             print(f"🔍 Loading book page: {book_url}")
             self.driver.get(book_url)
@@ -355,10 +374,17 @@ class ChapterListExtractor:
             # self.db.update_book(book_id, download_status='ready_for_download', total_chargers=len(all_chapters))
             
             print(f"✅ Successfully extracted {len(all_chapters)} chapters.")
+            self.db.log_request("chapter_list", "success", session_type=self.session_type,
+                                domain=self.domain_host, url=book_url,
+                                detail=f"{len(all_chapters)} chapters",
+                                duration_ms=int((time.time() - t0) * 1000))
             # return True, f"Extracted {len(all_chapters)} chapters"
             return all_chapters
             
         except Exception as e:
+            self.db.log_request("chapter_list", "failed", session_type=self.session_type,
+                                domain=self.domain_host, url=book_url, error=str(e),
+                                duration_ms=int((time.time() - t0) * 1000))
             print(f"❌ Failed to extract chapter list from {book_url}: {e}")
             return []
     
@@ -533,6 +559,9 @@ class ChapterListExtractor:
                             book_info['cover_image_url'], save_dir
                         )
                 print(f"📚 Added new book to DB: {book_title} (ID: {book_id})")
+                self.db.log_request("book_added", "success", session_type=self.session_type,
+                                    domain=self.domain_host, url=book_url, book_id=book_id,
+                                    detail=book_title)
             
             # Save chapters to database
             self.save_chapters_to_db(book_id, chapters)
@@ -547,6 +576,10 @@ class ChapterListExtractor:
                 total_chapters=len(chapters)
             )
             
+            self.db.log_request("book_extract", "success", session_type=self.session_type,
+                                domain=self.domain_host, url=book_url, book_id=book_id,
+                                detail=f"{len(chapters)} chapters")
+            
             print(f"✅ Successfully processed {book_title}")
             print(f"   📊 Chapters found: {len(chapters)}")
             print(f"   💾 Saved to database and HTML template updated")
@@ -554,6 +587,8 @@ class ChapterListExtractor:
             return True
             
         except Exception as e:
+            self.db.log_request("book_extract", "failed", session_type=self.session_type,
+                                domain=self.domain_host, url=book_url, error=str(e))
             print(f"❌ Failed to process book {book_title}: {e}")
             return False
     

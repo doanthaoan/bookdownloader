@@ -85,7 +85,10 @@ INSERT OR IGNORE INTO application_settings (key, value, description) VALUES
 ('translate_impersonate', 'chrome', 'curl_cffi impersonation target: chrome, chrome120, chrome124, chrome131, etc.'),
 ('translate_cookies', '{}', 'JSON dict of cookies (e.g. cf_clearance) for the translation site'),
 ('translate_cookie_wait', '60', 'Seconds to wait in a real Chrome for Cloudflare to issue a fresh cf_clearance during auto cookie refresh'),
-('translate_cookie_refresh_max', '1', 'Max times to auto-refresh the cf_clearance cookie per request (prevents server blocking)');
+('translate_cookie_refresh_max', '1', 'Max times to auto-refresh the cf_clearance cookie per request (prevents server blocking)'),
+('request_session_mode', 'session', 'Download access mode: session (logged-in cookies) or non_session (free, no cookies)'),
+('chapter_limit_session', '0', 'Daily chapter-request limit for session access (0 = no limit configured)'),
+('chapter_limit_nonsession', '0', 'Daily chapter-request limit for non-session/free access (0 = no limit configured)');
 
 -- Trigger to automatically update updated_at timestamp
 CREATE TRIGGER IF NOT EXISTS update_books_timestamp 
@@ -124,6 +127,29 @@ CREATE TABLE IF NOT EXISTS text_cleaning_rules (
     description TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Request log for statistics: every site request (chapter/book page/extraction/
+-- translation/cover image) plus key business events (book added, book downloaded).
+-- session_type prepares for multi-profile: 'session' (logged-in cookies) vs
+-- 'non_session' (free, no cookies), later 'profile:<name>'.
+CREATE TABLE IF NOT EXISTS request_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    request_type TEXT NOT NULL,   -- chapter, book_page, chapter_list, cover_image, book_added, book_download, translate_api, translate_web
+    status TEXT NOT NULL,         -- success / failed
+    session_type TEXT DEFAULT 'session',
+    domain TEXT,
+    url TEXT,
+    book_id INTEGER,
+    chapter_id INTEGER,
+    detail TEXT,
+    error TEXT,
+    duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_request_logs_created ON request_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_request_logs_type ON request_logs(request_type);
+CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status);
+CREATE INDEX IF NOT EXISTS idx_request_logs_session ON request_logs(session_type);
 
 -- Views for common reporting needs
 CREATE VIEW IF NOT EXISTS vw_books_progress AS

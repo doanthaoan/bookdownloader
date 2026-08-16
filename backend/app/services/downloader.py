@@ -7,6 +7,7 @@ import re
 import time
 import random
 import signal
+from urllib.parse import urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -85,6 +86,10 @@ class TruyenWikiDownloader:
         self.book_id = self.book['id']
         self.book_name = self.book['seo_title_basic']  # Use base_title for cleaner filenames
         self.domain = TRUYENWIKI['book_domain']
+        self.domain_host = urlparse(self.domain).hostname or 'wikicv.org'
+        # Access mode: 'session' (inject login cookies) or 'non_session' (free,
+        # no cookies — the site keeps a separate request quota per access type).
+        self.session_type = (self.db.get_setting('request_session_mode') or 'session').strip() or 'session'
         
         # Load paths and settings from DB (with fallback to TRUYENWIKI config)
         self.book_path = self.db.get_setting('book_path') or TRUYENWIKI['book_path']
@@ -135,7 +140,11 @@ class TruyenWikiDownloader:
         return driver
     
     def _inject_cookies(self):
-        """Inject cookies into the browser session."""
+        """Inject cookies into the browser session (skipped in non-session mode,
+        so chapter requests count against the site's free/guest quota)."""
+        if self.session_type == "non_session":
+            print(f"{Fore.CYAN}Non-session mode — skipping cookie injection (free access).")
+            return
         print(f"{Fore.CYAN}Injecting cookies...")
         self.driver.get(self.domain)
         
@@ -175,11 +184,20 @@ class TruyenWikiDownloader:
         full_url = chapter_url if chapter_url.startswith("http") else self.domain + chapter_url
         
         # Navigate to the chapter
-        self.driver.get(full_url)
-        
-        # WAIT: Wait for the content wrapper to appear (timeout from DB settings)
-        wait = WebDriverWait(self.driver, self.page_load_timeout)
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "content-body-wrapper")))
+        t0 = time.time()
+        try:
+            self.driver.get(full_url)
+            
+            # WAIT: Wait for the content wrapper to appear (timeout from DB settings)
+            wait = WebDriverWait(self.driver, self.page_load_timeout)
+            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "content-body-wrapper")))
+            duration_ms = int((time.time() - t0) * 1000)
+        except Exception as e:
+            duration_ms = int((time.time() - t0) * 1000)
+            self.db.log_request("chapter", "failed", session_type=self.session_type,
+                                domain=self.domain_host, url=full_url, book_id=self.book_id,
+                                chapter_id=chapter["id"], error=str(e), duration_ms=duration_ms)
+            raise
         
         # Anti-bot cooldown: random delay from DB settings
         time.sleep(random.randint(self.delay_min, self.delay_max))
@@ -193,6 +211,11 @@ class TruyenWikiDownloader:
         content_tag = soup.find('div', {'class': 'content-body-wrapper'})
         
         if not content_tag:
+            self.db.log_request("chapter", "failed", session_type=self.session_type,
+                                domain=self.domain_host, url=full_url, book_id=self.book_id,
+                                chapter_id=chapter["id"],
+                                error="Could not find content-body-wrapper after waiting.",
+                                duration_ms=duration_ms)
             raise Exception("Could not find content-body-wrapper after waiting.")
 
         # Apply ONLY global Text Cleaning rules here. Per-book corrections are
@@ -207,6 +230,10 @@ class TruyenWikiDownloader:
 
         self.db.update_chapter_title(chapter['id'], title_text)
         self.db.update_chapter_content(chapter['id'], "\n\n".join(cleaned_paragraphs))
+
+        self.db.log_request("chapter", "success", session_type=self.session_type,
+                            domain=self.domain_host, url=full_url, book_id=self.book_id,
+                            chapter_id=chapter["id"], detail=title_text, duration_ms=duration_ms)
 
         return title_text, full_url
 
@@ -356,6 +383,12 @@ class TruyenWikiDownloader:
             download_status=new_status,
             downloaded_chapters=total_downloaded
         )
+        self.db.log_request(
+            "book_download",
+            "success" if new_status in ("completed", "completed_with_errors") else "failed",
+            session_type=self.session_type, domain=self.domain_host,
+            book_id=self.book_id, detail=new_status,
+        )
         
         self._print_summary(success_count, fail_count, len(chapters_to_process), total_duration)
 
@@ -461,6 +494,12 @@ class TruyenWikiDownloader:
             book_id=self.book_id, download_status=new_status,
             downloaded_chapters=len([c for c in self.chapters if c['download_status'] == 'completed'])
         )
+        self.db.log_request(
+            "book_download",
+            "success" if new_status in ("completed", "completed_with_errors") else "failed",
+            session_type=self.session_type, domain=self.domain_host,
+            book_id=self.book_id, detail=new_status,
+        )
         self._print_summary(success_count, fail_count, len(chapters_to_process), total_duration)
         unregister_download(self.book_id)
 
@@ -486,6 +525,9 @@ class TruyenWikiDownloader:
                 file_path=f"{self.book_name}_redownload.docx"
             )
             self._success_count = 1
+            self.db.log_request("book_download", "success", session_type=self.session_type,
+                                domain=self.domain_host, book_id=self.book_id,
+                                chapter_id=chapter_id, detail="completed")
             print(f"{Fore.GREEN}Single download success: {title}")
 
         except Exception as e:
@@ -495,6 +537,9 @@ class TruyenWikiDownloader:
                 chapter_id=chapter['id'], status='failed', error_message=str(e)
             )
             self._fail_count = 1
+            self.db.log_request("book_download", "failed", session_type=self.session_type,
+                                domain=self.domain_host, book_id=self.book_id,
+                                chapter_id=chapter_id, error=str(e), detail="failed")
             print(f"{Fore.RED}Single download failed: {chapter['chapter_title']} | Error: {e}")
             raise
 

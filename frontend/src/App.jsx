@@ -9,6 +9,7 @@ import LogsViewer from './pages/LogsViewer';
 import UpdatesPage from './pages/UpdatesPage';
 import TextCleaning from './pages/TextCleaning';
 import Translate from './pages/Translate';
+import Statistics from './pages/Statistics';
 
 function App() {
   const [activePage, setActivePage] = useState('dashboard');
@@ -37,6 +38,8 @@ function App() {
         return <TextCleaning />;
       case 'translate':
         return <Translate onViewBook={(id) => navigateTo('bookdetails', id)} />;
+      case 'statistics':
+        return <Statistics />;
       case 'bookdetails':
         return <BookDetails bookId={selectedBookId} onBack={() => navigateTo('booklist')} />;
       default:

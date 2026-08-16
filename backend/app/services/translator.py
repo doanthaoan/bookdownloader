@@ -445,21 +445,52 @@ class Translator:
         used = None
         for i, chunk in enumerate(chunks):
             if method == "api":
+                t0 = time.time()
                 try:
                     results.append(self._api_call(chunk))
                     used = "api"
+                    self._log_translate_request("api", True, duration_ms=int((time.time() - t0) * 1000))
                 except Exception as e:
+                    self._log_translate_request("api", False, error=str(e),
+                                                duration_ms=int((time.time() - t0) * 1000))
                     print(f"{Fore.YELLOW}API translate failed, falling back to web: {e}")
+                    t0 = time.time()
+                    try:
+                        results.append(self._web_call(chunk))
+                        used = "web"
+                        self._log_translate_request("web", True, duration_ms=int((time.time() - t0) * 1000))
+                    except Exception as e2:
+                        self._log_translate_request("web", False, error=str(e2),
+                                                    duration_ms=int((time.time() - t0) * 1000))
+                        raise
+            else:
+                t0 = time.time()
+                try:
                     results.append(self._web_call(chunk))
                     used = "web"
-            else:
-                results.append(self._web_call(chunk))
-                used = "web"
+                    self._log_translate_request("web", True, duration_ms=int((time.time() - t0) * 1000))
+                except Exception as e2:
+                    self._log_translate_request("web", False, error=str(e2),
+                                                duration_ms=int((time.time() - t0) * 1000))
+                    raise
             if i < len(chunks) - 1:
                 time.sleep(random.uniform(0.5, 1.5))
         if used:
             print(f"[{used}] translated {len(text)} chars")
         return "\n".join(results)
+
+    def _log_translate_request(self, method: str, success: bool, error: str = None,
+                               duration_ms: int = None):
+        """Record a translation-site request for statistics (separate domain from
+        the book site, so it never counts against the book chapter limit)."""
+        domain = urlparse(self.site).hostname or 'dichtienghoa.com'
+        self.db.log_request(
+            f"translate_{method}",
+            "success" if success else "failed",
+            session_type="session", domain=domain,
+            url=self.api_endpoint if method == "api" else self.site,
+            error=error, duration_ms=duration_ms,
+        )
 
     def _chunk_text(self, text: str) -> list[str]:
         """Split text into chunks no larger than MAX_CHUNK_CHARS at paragraph boundaries."""

@@ -7,6 +7,7 @@ const navItems = [
   { id: 'updates', label: 'Updates' },
   { id: 'textcleaning', label: 'Text Cleaning' },
   { id: 'translate', label: 'Translate' },
+  { id: 'statistics', label: 'Statistics' },
   { id: 'logs', label: 'Logs' },
   { id: 'settings', label: 'Settings' },
 ];

@@ -278,13 +278,18 @@ class NovelDatabase:
         """, (status,))
         return [dict(row) for row in cursor.fetchall()]
     
-    def update_book_status(self, book_id: int, download_status: str, 
+    def update_book_status(self, book_id: int, download_status: str = None, 
                           total_chapters: int = None, 
                           downloaded_chapters: int = None):
-        """Book progress and status tracking updates."""
-        update_fields = ["download_status = ?", "updated_at = CURRENT_TIMESTAMP"]
-        params = [download_status]
+        """Book progress and status tracking updates. Any omitted field is left
+        untouched (download_status is only changed when explicitly passed)."""
+        update_fields = ["updated_at = CURRENT_TIMESTAMP"]
+        params = []
         
+        if download_status is not None:
+            update_fields.append("download_status = ?")
+            params.append(download_status)
+            
         if total_chapters is not None:
             update_fields.append("total_chapters = ?")
             params.append(total_chapters)
@@ -616,6 +621,154 @@ class NovelDatabase:
         for i, rid in enumerate(ids):
             conn.execute("UPDATE text_cleaning_rules SET sort_order = ? WHERE id = ?", (i, rid))
         conn.commit()
+
+    # === REQUEST LOG OPERATIONS ===
+
+    def log_request(self, request_type: str, status: str, session_type: str = "session",
+                    domain: str = None, url: str = None, book_id: int = None,
+                    chapter_id: int = None, detail: str = None, error: str = None,
+                    duration_ms: int = None):
+        """Record a site request or business event for statistics.
+
+        request_type: chapter, book_page, chapter_list, cover_image,
+                      book_added, book_download, translate_api, translate_web.
+        status: success / failed. Timestamps are stored in LOCAL time so the
+        daily grouping ("today") lines up with the user's clock.
+        """
+        conn = self._get_connection()
+        conn.execute("""
+            INSERT INTO request_logs
+                (created_at, request_type, status, session_type, domain, url,
+                 book_id, chapter_id, detail, error, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), request_type, status,
+              session_type, domain, url, book_id, chapter_id, detail, error, duration_ms))
+        conn.commit()
+
+    def _build_log_filter(self, start=None, end=None, request_type=None, status=None,
+                          session_type=None, domain=None, prefix: str = "") -> tuple:
+        """Build WHERE clause + params for request_logs queries.
+
+        prefix: table alias to qualify columns with (e.g. 'r.' when the query
+        joins another table that also has a created_at column).
+        """
+        conds, params = [], []
+        created = f"{prefix}created_at"
+        if start:
+            conds.append(f"date({created}) >= date(?)")
+            params.append(start)
+        if end:
+            conds.append(f"date({created}) <= date(?)")
+            params.append(end)
+        if request_type:
+            conds.append(f"{prefix}request_type = ?")
+            params.append(request_type)
+        if status:
+            conds.append(f"{prefix}status = ?")
+            params.append(status)
+        if session_type:
+            conds.append(f"{prefix}session_type = ?")
+            params.append(session_type)
+        if domain:
+            conds.append(f"{prefix}domain = ?")
+            params.append(domain)
+        return (" AND ".join(conds), params)
+
+    def get_request_stats(self, start: str = None, end: str = None, request_type: str = None,
+                          status: str = None, session_type: str = None, domain: str = None) -> Dict:
+        """Aggregate request-log stats over a date range (inclusive)."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        where, params = self._build_log_filter(start, end, request_type, status, session_type, domain)
+        where_sql = ("WHERE " + where) if where else ""
+        total = conn.execute(f"SELECT COUNT(*) FROM request_logs {where_sql}", params).fetchone()[0]
+        by_status = {r['status']: r['n'] for r in conn.execute(
+            f"SELECT status, COUNT(*) as n FROM request_logs {where_sql} GROUP BY status", params)}
+        by_type = {r['request_type']: r['n'] for r in conn.execute(
+            f"SELECT request_type, COUNT(*) as n FROM request_logs {where_sql} GROUP BY request_type", params)}
+        by_session = {r['session_type']: r['n'] for r in conn.execute(
+            f"SELECT session_type, COUNT(*) as n FROM request_logs {where_sql} GROUP BY session_type", params)}
+        by_day = [dict(r) for r in conn.execute(f"""
+            SELECT date(created_at) as day, COUNT(*) as total,
+                   SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+                   SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+            FROM request_logs {where_sql} GROUP BY day ORDER BY day
+        """, params)]
+        return {
+            "total": total,
+            "by_status": by_status,
+            "by_type": by_type,
+            "by_session": by_session,
+            "by_day": by_day,
+        }
+
+    def get_request_logs(self, start: str = None, end: str = None, request_type: str = None,
+                         status: str = None, session_type: str = None, domain: str = None,
+                         page: int = 1, per_page: int = 50) -> Dict:
+        """Paginated request log entries, newest first."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        where, params = self._build_log_filter(start, end, request_type, status, session_type, domain, prefix="r.")
+        where_sql = ("WHERE " + where) if where else ""
+        total = conn.execute(f"SELECT COUNT(*) FROM request_logs r {where_sql}", params).fetchone()[0]
+        offset = (page - 1) * per_page
+        rows = conn.execute(f"""
+            SELECT r.*, b.title as book_title
+            FROM request_logs r
+            LEFT JOIN books b ON b.id = r.book_id
+            {where_sql}
+            ORDER BY r.id DESC
+            LIMIT ? OFFSET ?
+        """, params + [per_page, offset]).fetchall()
+        return {
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": max(1, (total + per_page - 1) // per_page),
+            "logs": [dict(r) for r in rows],
+        }
+
+    def get_daily_chapter_counts(self, start_day: str = None, end_day: str = None,
+                                 session_type: str = None) -> List[Dict]:
+        """Daily chapter-request counts (success/failed) for a date range,
+        grouped by session_type. Used for the daily-limit estimate."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        conds = ["request_type = 'chapter'"]
+        params = []
+        if start_day:
+            conds.append("date(created_at) >= date(?)")
+            params.append(start_day)
+        if end_day:
+            conds.append("date(created_at) <= date(?)")
+            params.append(end_day)
+        if session_type:
+            conds.append("session_type = ?")
+            params.append(session_type)
+        rows = conn.execute(f"""
+            SELECT date(created_at) as day, session_type, COUNT(*) as total,
+                   SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+                   SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+            FROM request_logs
+            WHERE {' AND '.join(conds)}
+            GROUP BY date(created_at), session_type
+            ORDER BY day
+        """, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_request_log_meta(self) -> Dict:
+        """Distinct values present in the log (for filter dropdowns)."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        def distinct(col):
+            return [r[0] for r in conn.execute(
+                f"SELECT DISTINCT {col} FROM request_logs WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}").fetchall()]
+        return {
+            "request_types": distinct("request_type"),
+            "statuses": distinct("status"),
+            "session_types": distinct("session_type"),
+            "domains": distinct("domain"),
+        }
 
     # === UTILITY METHODS ===
     
