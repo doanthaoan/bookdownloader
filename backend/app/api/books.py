@@ -11,6 +11,7 @@ from app.services.extractor import ChapterListExtractor, extract_chapters_for_bo
 from app.services.downloader import download_book, cancel_download, get_download_progress, redownload_book, download_single_chapter
 from app.services.docx_exporter import (build_book_docx, build_render_rules,
                                         apply_rules, apply_paragraphs,
+                                        collapse_blank_lines,
                                         diff_rules, diff_paragraphs, chapter_text)
 from app.config import TRUYENWIKI
 
@@ -135,6 +136,8 @@ async def download_book_task(book_id: int, background_tasks: BackgroundTasks, ma
     book = db.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
+    if get_download_progress(book_id):
+        raise HTTPException(status_code=409, detail="A download is already running for this book.")
     if book.get('is_translated'):
         raise HTTPException(status_code=400, detail="Translated book — content is produced by the Translate tool, not by web download.")
     
@@ -162,24 +165,39 @@ async def cancel_download_task(book_id: int):
     raise HTTPException(status_code=404, detail="No active download found for this book.")
 
 @router.post("/{book_id}/redownload")
-async def redownload_book_task(book_id: int, background_tasks: BackgroundTasks, all_chapters: bool = False):
+async def redownload_book_task(book_id: int, background_tasks: BackgroundTasks,
+                               all_chapters: bool = False, count: int = None,
+                               start_order: int = None, end_order: int = None):
     """Re-download chapters into a separate _redownload.docx.
-    
+
     By default only re-downloads failed chapters.
     Set all_chapters=true to re-download every chapter (fresh copy).
+    Set count=N to re-download only the first N chapters.
+    Set start_order/end_order to re-download a chapter range (inclusive).
     """
     book = db.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
+    if get_download_progress(book_id):
+        raise HTTPException(status_code=409, detail="A download is already running for this book.")
 
     def run():
         try:
-            redownload_book(book['title'], all_chapters=all_chapters)
+            redownload_book(book['title'], all_chapters=all_chapters,
+                            count=count, start_order=start_order,
+                            end_order=end_order)
         except Exception as e:
             print(f"Redownload failed: {e}")
 
     background_tasks.add_task(run)
-    label = "all chapters" if all_chapters else "failed chapters"
+    if count is not None and count > 0:
+        label = f"first {count} chapters"
+    elif start_order is not None or end_order is not None:
+        label = f"chapters {start_order or 1} to {end_order or 'last'}"
+    elif all_chapters:
+        label = "all chapters"
+    else:
+        label = "failed chapters"
     return {"message": f"Re-download started for {book['title']} ({label}). Output goes to _redownload.docx."}
 
 @router.post("/{book_id}/chapters/{chapter_id}/download")
@@ -188,6 +206,8 @@ async def download_single_chapter_task(book_id: int, chapter_id: int, background
     book = db.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
+    if get_download_progress(book_id):
+        raise HTTPException(status_code=409, detail="A download is already running for this book.")
 
     def run():
         try:
@@ -367,6 +387,8 @@ async def preview_correction(book_id: int, chapter_id: int):
     rules = build_render_rules(db, book)
     is_translated = bool(book.get("is_translated"))
     title, content = chapter_text(chapter, is_translated)
+    title = collapse_blank_lines(title)
+    content = collapse_blank_lines(content)
     return {
         "chapter_id": chapter_id,
         "chapter_order": chapter["chapter_order"],
@@ -476,6 +498,17 @@ async def toggle_sent(book_id: int):
     new_val = 0 if book.get('is_sent') else 1
     db.update_book_info(book_id, is_sent=new_val)
     return {"is_sent": new_val, "message": "Marked as sent" if new_val else "Marked as not sent"}
+
+@router.post("/{book_id}/toggle-auto-export")
+async def toggle_auto_export(book_id: int):
+    """Toggle whether a DOCX is exported automatically after download."""
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    new_val = 0 if book.get('auto_export_docx') else 1
+    db.update_book_info(book_id, auto_export_docx=new_val)
+    return {"auto_export_docx": new_val,
+            "message": "Auto DOCX export enabled" if new_val else "Auto DOCX export disabled"}
 
 @router.put("/{book_id}")
 async def update_book_info(book_id: int, req: UpdateBookInfoRequest):

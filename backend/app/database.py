@@ -95,6 +95,7 @@ class NovelDatabase:
             "ALTER TABLE books ADD COLUMN short_description TEXT",
             "ALTER TABLE books ADD COLUMN source_file TEXT",
             "ALTER TABLE books ADD COLUMN is_translated INTEGER DEFAULT 0",
+            "ALTER TABLE books ADD COLUMN auto_export_docx INTEGER DEFAULT 1",
             "ALTER TABLE chapters ADD COLUMN chapter_content TEXT",
             "ALTER TABLE chapters ADD COLUMN translated_content TEXT",
         ]
@@ -241,7 +242,7 @@ class NovelDatabase:
         allowed = {'author', 'book_web_status', 'last_chapter_url',
                    'last_chapter_title', 'last_update_date', 'total_chapters',
                    'is_favorite', 'is_sent', 'cover_image_url', 'short_description',
-                   'source_file', 'is_translated', 'notes'}
+                   'source_file', 'is_translated', 'notes', 'auto_export_docx'}
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not updates:
             return

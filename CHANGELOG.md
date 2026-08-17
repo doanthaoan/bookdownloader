@@ -12,6 +12,52 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.4.6] — 2026-08-17
+
+### Added
+
+- **Multi-empty-line cleanup** — new `collapse_blank_lines` helper collapses runs of 2+ consecutive newlines down to a single paragraph break (keeps at most one blank line) and strips leading/trailing blanks. Applied in every render path so all outputs share the same behavior:
+  - Downloader save time (downloaded books are stored globally cleaned, so new content never carries blank-line runs).
+  - DOCX export (`build_book_docx` — covers auto-export, export-corrected, and re-download exports for both book types).
+  - Correction preview (preview now matches the exported DOCX).
+
+## [1.4.5] — 2026-08-17
+
+### Added
+
+- **Export Corrected DOCX for translated books** — the translated-book Book Details page now shows the "Export Corrected" button and "Open Corrected DOCX" link (same backend endpoint as non-translated books; applies global Text Cleaning rules + per-book corrections at render time without touching the DB).
+
+## [1.4.4] — 2026-08-17
+
+### Changed
+
+- **Book Details action buttons grouped into labeled sections** — the download-area controls are now laid out in three labeled rows: **Download** (Max input, Download All, Cancel), **Re-download** (failed, N, Range, All), and **Others** (Update & Download, Refresh Info, Continue Extract, Open DOCX, Open Redownload DOCX, Export Corrected, Open Corrected DOCX).
+
+## [1.4.3] — 2026-08-17
+
+### Changed
+
+- **Re-download now available on partially-downloaded books** — the N / Range / All re-download controls show whenever a book is not actively downloading, not only when it's fully downloaded. Use it to re-fetch any range of chapters even while the book still has pending/failed chapters.
+- **No status mislabeling on partial re-download** — `run_redownload` no longer forces the book status to `paused`/`completed`. The book keeps its pre-redownload status unless the re-download actually finishes the whole book (no pending/failed chapters remain).
+- **Concurrent download guard** — `register_download` now refuses to register a second downloader for the same book, and `POST /books/{id}/download`, `/redownload`, and `/chapters/{id}/download` return 409 when a download is already running for that book. Prevents two Selenium drivers racing on cookie injection and DB writes.
+
+## [1.4.2] — 2026-08-17
+
+### Added
+
+- **Partial / ranged re-download** — the Re-download section on the Book Details page now supports three modes (all taken by `POST /api/books/{id}/redownload`):
+  - `count=N` — re-download only the first N chapters.
+  - `start_order` / `end_order` — re-download only chapters within a given order range (inclusive).
+  - `all_chapters=true` — the existing "Re-download All" behavior (all chapters into `_redownload.docx`).
+
+## [1.4.1] — 2026-08-17
+
+### Added
+
+- **Per-book Auto DOCX export toggle** — new `books.auto_export_docx` column (default on, matching previous behavior). A checkbox on the Book Details page controls whether the DOCX is rendered automatically after a download/redownload/single-chapter download finishes. When unchecked, chapters are still saved to the DB but the DOCX export step is skipped. Backed by `POST /api/books/{id}/toggle-auto-export`.
+
+---
+
 ## [1.4] — 2026-08-15
 
 ### Added

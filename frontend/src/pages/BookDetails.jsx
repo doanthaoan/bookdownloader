@@ -33,6 +33,9 @@ const BookDetails = ({ bookId, onBack }) => {
   const [exporting, setExporting] = useState(false);
   const [tags, setTags] = useState([]);
   const [maxChapters, setMaxChapters] = useState('');
+  const [redownloadCount, setRedownloadCount] = useState('');
+  const [redownloadFrom, setRedownloadFrom] = useState('');
+  const [redownloadTo, setRedownloadTo] = useState('');
   const pollingRef = useRef(null);
 
   // Edit info form
@@ -154,7 +157,7 @@ const BookDetails = ({ bookId, onBack }) => {
   const handleRedownload = async () => {
     if (!confirm('Re-download failed chapters? Content goes to _redownload.docx.')) return;
     try {
-      await bookApi.redownload(bookId, false);
+      await bookApi.redownload(bookId, { all_chapters: false });
       alert('Re-download started for failed chapters.');
     } catch (err) {
       alert('Re-download failed: ' + err.message);
@@ -164,10 +167,41 @@ const BookDetails = ({ bookId, onBack }) => {
   const handleRedownloadAll = async () => {
     if (!confirm('Re-download ALL chapters? This will fetch every chapter into _redownload.docx.')) return;
     try {
-      await bookApi.redownload(bookId, true);
+      await bookApi.redownload(bookId, { all_chapters: true });
       alert('Re-download started for ALL chapters.');
     } catch (err) {
       alert('Re-download all failed: ' + err.message);
+    }
+  };
+
+  const handleRedownloadCount = async () => {
+    const n = parseInt(redownloadCount, 10);
+    if (!(n > 0)) {
+      alert('Enter a valid number of chapters (N).');
+      return;
+    }
+    if (!confirm(`Re-download the first ${n} chapters? Content goes to _redownload.docx.`)) return;
+    try {
+      await bookApi.redownload(bookId, { count: n });
+      alert(`Re-download started for the first ${n} chapters.`);
+    } catch (err) {
+      alert('Re-download failed: ' + err.message);
+    }
+  };
+
+  const handleRedownloadRange = async () => {
+    const from = parseInt(redownloadFrom, 10);
+    const to = parseInt(redownloadTo, 10);
+    if (!(from > 0) || !(to > 0) || to < from) {
+      alert('Enter a valid range (From ≤ To).');
+      return;
+    }
+    if (!confirm(`Re-download chapters ${from} to ${to}? Content goes to _redownload.docx.`)) return;
+    try {
+      await bookApi.redownload(bookId, { start_order: from, end_order: to });
+      alert(`Re-download started for chapters ${from} to ${to}.`);
+    } catch (err) {
+      alert('Re-download failed: ' + err.message);
     }
   };
 
@@ -412,6 +446,13 @@ const BookDetails = ({ bookId, onBack }) => {
             title={book.is_sent ? 'Mark as not sent' : 'Mark as sent'}>
             ✓ {book.is_sent ? 'Sent' : 'Not sent'}
           </button>
+          <label className={`flex items-center gap-1.5 text-sm leading-none px-2 py-1 rounded transition cursor-pointer select-none ${book.auto_export_docx ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-400 hover:text-gray-600'}`}
+            title="Export DOCX automatically after each download/redownload">
+            <input type="checkbox" checked={!!book.auto_export_docx}
+              onChange={async e => { await bookApi.toggleAutoExport(bookId); fetchData(); }}
+              className="h-4 w-4" />
+            Auto DOCX
+          </label>
         </div>
       </div>
 
@@ -596,9 +637,10 @@ const BookDetails = ({ bookId, onBack }) => {
           </div>
         )}
 
-        <div className="mt-4 flex flex-wrap gap-2 items-center">
+        <div className="mt-4">
           {isTranslated ? (
             <>
+          <div className="flex flex-wrap gap-2 items-center">
           <div className="flex items-center gap-1 mr-1">
             <label className="text-xs text-gray-500 whitespace-nowrap">Max:</label>
             <input type="number" min="0" value={maxChapters}
@@ -666,83 +708,140 @@ const BookDetails = ({ bookId, onBack }) => {
                   Open Re-translate DOCX
                 </a>
               )}
-            </>
-          ) : (
-            <>
-          <div className="flex items-center gap-1 mr-1">
-            <label className="text-xs text-gray-500 whitespace-nowrap">Max:</label>
-            <input type="number" min="0" value={maxChapters}
-              onChange={e => setMaxChapters(e.target.value)}
-              placeholder="no limit"
-              className="w-20 border rounded px-2 py-1.5 text-sm text-center" />
+              {completedChapters > 0 && (
+                <button onClick={handleExportCorrected} disabled={exporting}
+                  className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition"
+                  title="Render the book from stored content, applying global cleaning + corrections now">
+                  Export Corrected
+                </button>
+              )}
+              {correctedDocxExists && (
+                <a href={bookApi.exportCorrectedDocxUrl(bookId)} target="_blank"
+                  className="bg-emerald-700 hover:bg-emerald-800 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
+                  Open Corrected DOCX
+                </a>
+              )}
           </div>
-          {downloading ? (
-            <button onClick={handleCancel} className="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded text-sm font-medium transition">
-              Cancel Download
-            </button>
-          ) : isCompleted ? (
-            <>
-              <button onClick={handleRedownloadAll}
-                className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded text-sm font-medium transition">
-                Re-download All
-              </button>
             </>
+          ) : downloading ? (
+            <div className="flex flex-wrap gap-2 items-center">
+              <button onClick={handleCancel} className="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+                Cancel Download
+              </button>
+            </div>
           ) : (
-            <>
-              <button onClick={handleRedownload} disabled={failedChapters.length === 0}
-                className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
-                Re-download ({failedChapters.length} failed)
-              </button>
-              <button onClick={handleDownload} disabled={totalChapters === 0}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
-                Download All
-              </button>
-            </>
-          )}
-          {completedChapters > 0 && (
-            <a href={bookApi.docxUrl(bookId)} target="_blank"
-              className="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
-              Open DOCX
-            </a>
-          )}
-          {redownloadDocxExists && (
-            <a href={bookApi.redownloadDocxUrl(bookId)} target="_blank"
-              className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
-              Open Redownload DOCX
-            </a>
-          )}
-          {book.book_web_status && ['Còn tiếp', 'Chưa xác minh'].includes(book.book_web_status) && (
-            <button onClick={handleContinueExtract}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded text-sm font-medium transition">
-              Continue Extract
-            </button>
-          )}
-          {book.book_url && (
-            <>
-              <button onClick={handleUpdateFull}
-                className="bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded text-sm font-medium transition">
-                Update & Download
-              </button>
-              <button onClick={handleRefreshInfo}
-                className="bg-cyan-600 hover:bg-cyan-700 text-white px-5 py-2 rounded text-sm font-medium transition">
-                Refresh Info
-              </button>
-            </>
-          )}
-            </>
-          )}
-          {completedChapters > 0 && (
-            <button onClick={handleExportCorrected} disabled={exporting}
-              className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition"
-              title="Render the book from stored content, applying corrections now">
-              Export Corrected
-            </button>
-          )}
-          {correctedDocxExists && (
-            <a href={bookApi.exportCorrectedDocxUrl(bookId)} target="_blank"
-              className="bg-emerald-700 hover:bg-emerald-800 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
-              Open Corrected DOCX
-            </a>
+            <div className="space-y-3">
+              {/* Download */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider w-30 flex-shrink-0">Download</span>
+                <div className="flex items-center gap-1 mr-1">
+                  <label className="text-xs text-gray-500 whitespace-nowrap">Max:</label>
+                  <input type="number" min="0" value={maxChapters}
+                    onChange={e => setMaxChapters(e.target.value)}
+                    placeholder="no limit"
+                    className="w-20 border rounded px-2 py-1.5 text-sm text-center" />
+                </div>
+                <button onClick={handleDownload} disabled={totalChapters === 0}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
+                  Download All
+                </button>
+              </div>
+
+              {/* Re-download */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider w-30 flex-shrink-0">Re-download</span>
+                {!isCompleted && (
+                  <button onClick={handleRedownload} disabled={failedChapters.length === 0}
+                    className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition">
+                    Re-download ({failedChapters.length} failed)
+                  </button>
+                )}
+                {/* <div className="flex items-center gap-1 mr-1">
+                  <label className="text-xs text-gray-500 whitespace-nowrap">N:</label>
+                  <input type="number" min="1" value={redownloadCount}
+                    onChange={e => setRedownloadCount(e.target.value)}
+                    placeholder="count"
+                    title="Number of chapters to re-download from the start"
+                    className="w-16 border rounded px-2 py-1.5 text-sm text-center" />
+                  <button onClick={handleRedownloadCount}
+                    className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm font-medium transition"
+                    title="Re-download the first N chapters">
+                    Re-download N
+                  </button>
+                </div> */}
+                <div className="flex items-center gap-1 mr-1">
+                  <label className="text-xs text-gray-500 whitespace-nowrap">From:</label>
+                  <input type="number" min="1" value={redownloadFrom}
+                    onChange={e => setRedownloadFrom(e.target.value)}
+                    placeholder="1"
+                    title="First chapter order to re-download"
+                    className="w-14 border rounded px-2 py-1.5 text-sm text-center" />
+                  <label className="text-xs text-gray-500 whitespace-nowrap">To:</label>
+                  <input type="number" min="1" value={redownloadTo}
+                    onChange={e => setRedownloadTo(e.target.value)}
+                    placeholder="10"
+                    title="Last chapter order to re-download"
+                    className="w-14 border rounded px-2 py-1.5 text-sm text-center" />
+                  <button onClick={handleRedownloadRange}
+                    className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm font-medium transition"
+                    title="Re-download chapters in the given range">
+                    Re-download Range
+                  </button>
+                </div>
+                <button onClick={handleRedownloadAll}
+                  className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+                  Re-download All
+                </button>
+              </div>
+
+              {/* Others */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider w-30 flex-shrink-0">Others</span>
+                {book.book_url && (
+                  <>
+                    <button onClick={handleUpdateFull}
+                      className="bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+                      Update & Download
+                    </button>
+                    <button onClick={handleRefreshInfo}
+                      className="bg-cyan-600 hover:bg-cyan-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+                      Refresh Info
+                    </button>
+                  </>
+                )}
+                {book.book_web_status && ['Còn tiếp', 'Chưa xác minh'].includes(book.book_web_status) && (
+                  <button onClick={handleContinueExtract}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded text-sm font-medium transition">
+                    Continue Extract
+                  </button>
+                )}
+                {completedChapters > 0 && (
+                  <a href={bookApi.docxUrl(bookId)} target="_blank"
+                    className="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
+                    Open DOCX
+                  </a>
+                )}
+                {redownloadDocxExists && (
+                  <a href={bookApi.redownloadDocxUrl(bookId)} target="_blank"
+                    className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
+                    Open Redownload DOCX
+                  </a>
+                )}
+                {completedChapters > 0 && (
+                  <button onClick={handleExportCorrected} disabled={exporting}
+                    className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 text-white px-5 py-2 rounded text-sm font-medium transition"
+                    title="Render the book from stored content, applying corrections now">
+                    Export Corrected
+                  </button>
+                )}
+                {correctedDocxExists && (
+                  <a href={bookApi.exportCorrectedDocxUrl(bookId)} target="_blank"
+                    className="bg-emerald-700 hover:bg-emerald-800 text-white px-5 py-2 rounded text-sm font-medium transition inline-block">
+                    Open Corrected DOCX
+                  </a>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>

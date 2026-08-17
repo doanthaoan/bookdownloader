@@ -113,6 +113,16 @@ def apply_rules(text: str, rules: list) -> str:
     return text
 
 
+def collapse_blank_lines(text: str, max_blank: int = 1) -> str:
+    """Collapse runs of 2+ consecutive newlines down to a single paragraph
+    break (``\\n\\n``), leaving at most `max_blank` empty line(s) between
+    paragraphs, and strip leading/trailing blank lines. Idempotent."""
+    if not text:
+        return text
+    text = re.sub(r"\n{" + str(max_blank + 2) + r",}", "\n" * (max_blank + 1), text)
+    return text.strip("\n")
+
+
 def apply_paragraphs(text: str, rules: list, preserve_newlines: bool = False) -> str:
     """Apply rules, preserving newline paragraph separators if requested.
 
@@ -208,7 +218,7 @@ def build_book_docx(book: dict, chapters: list, rules: list, output_path,
             continue
         title, body = chapter_text(ch, is_translated)
         title = apply_rules(title, rules).strip()
-        body = apply_paragraphs(body, rules, preserve_newlines=is_translated)
+        body = collapse_blank_lines(apply_paragraphs(body, rules, preserve_newlines=is_translated))
         if title:
             doc.add_heading(title, level=1)
         if is_translated:

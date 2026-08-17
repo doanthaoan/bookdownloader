@@ -20,7 +20,8 @@ from colorama import Fore, init
 from app.config import TRUYENWIKI, get_cookies, get_user_agent
 from app.database import get_database
 from app.services.text_cleaner import TextCleaner
-from app.services.docx_exporter import build_book_docx, build_render_rules
+from app.services.docx_exporter import (build_book_docx, build_render_rules,
+                                        collapse_blank_lines)
 
 # Initialize colorama
 init(autoreset=True)
@@ -28,8 +29,14 @@ init(autoreset=True)
 # Track active downloads for cancellation support
 _active_downloads = {}
 
-def register_download(book_id: int, downloader):
+def register_download(book_id: int, downloader) -> bool:
+    """Register an active downloader for a book. Returns False (without
+    registering) if a downloader is already active for that book, so a second
+    run cannot race the first on cookies/DB writes."""
+    if book_id in _active_downloads:
+        return False
     _active_downloads[book_id] = downloader
+    return True
 
 def unregister_download(book_id: int):
     _active_downloads.pop(book_id, None)
@@ -46,6 +53,11 @@ def cancel_all_downloads():
     """Cancel all active downloads (used on server shutdown)."""
     for book_id in list(_active_downloads.keys()):
         cancel_download(book_id)
+
+def is_download_active(book_id: int) -> bool:
+    """True if a downloader is currently registered for this book."""
+    return book_id in _active_downloads
+
 
 def get_download_progress(book_id: int) -> dict:
     """Return progress info for an active download, or None if not active."""
@@ -85,6 +97,8 @@ class TruyenWikiDownloader:
         
         self.book_id = self.book['id']
         self.book_name = self.book['seo_title_basic']  # Use base_title for cleaner filenames
+        # Per-book flag: export DOCX automatically after a download finishes.
+        self.auto_export_docx = bool(self.book.get('auto_export_docx', 1))
         self.domain = TRUYENWIKI['book_domain']
         self.domain_host = urlparse(self.domain).hostname or 'wikicv.org'
         # Access mode: 'session' (inject login cookies) or 'non_session' (free,
@@ -227,9 +241,12 @@ class TruyenWikiDownloader:
             for p in content_tag.find_all('p')
             if p.get_text().strip()
         ]
+        # Collapse runs of blank lines so stored content (and everything derived
+        # from it) never carries multiple consecutive empty lines.
+        body_text = collapse_blank_lines("\n\n".join(cleaned_paragraphs))
 
         self.db.update_chapter_title(chapter['id'], title_text)
-        self.db.update_chapter_content(chapter['id'], "\n\n".join(cleaned_paragraphs))
+        self.db.update_chapter_content(chapter['id'], body_text)
 
         self.db.log_request("chapter", "success", session_type=self.session_type,
                             domain=self.domain_host, url=full_url, book_id=self.book_id,
@@ -258,7 +275,10 @@ class TruyenWikiDownloader:
             return
 
         # Register for cancellation support
-        register_download(self.book_id, self)
+        if not register_download(self.book_id, self):
+            print(f"{Fore.RED}A download is already running for '{self.book_name}' — skipping.")
+            self.driver.quit()
+            return
 
         # Mark as in-progress in DB
         self.db.update_book_status(
@@ -354,11 +374,14 @@ class TruyenWikiDownloader:
         finally:
             # Render the DOCX from DB content (source of truth). Runs on success,
             # cancel, or exception so whatever was downloaded is preserved.
-            try:
-                self._export_docx(self.output_docx)
-                print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
-            except Exception as e:
-                print(f"{Fore.RED}DOCX export failed: {e}")
+            if self.auto_export_docx:
+                try:
+                    self._export_docx(self.output_docx)
+                    print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
+                except Exception as e:
+                    print(f"{Fore.RED}DOCX export failed: {e}")
+            else:
+                print(f"{Fore.CYAN}Auto DOCX export disabled — skipping export.")
 
             # Always close the browser window
             self.driver.quit()
@@ -395,23 +418,42 @@ class TruyenWikiDownloader:
         # Unregister after completion
         unregister_download(self.book_id)
 
-    def run_redownload(self, all_chapters: bool = False):
+    def run_redownload(self, all_chapters: bool = False, count: int = None,
+                       start_order: int = None, end_order: int = None):
         """
         Re-download chapters into a separate _redownload.docx.
         
         Args:
             all_chapters: If True, re-download ALL chapters (fresh copy).
                          If False, only failed chapters.
+            count: If set, re-download only the first `count` chapters (by order).
+            start_order/end_order: If set, re-download chapters whose
+                         chapter_order falls within [start_order, end_order].
+                         Explicit selections (count/range) override all/failed.
         """
         if not self.chapters:
             print(f"{Fore.RED}No chapters found for '{self.book_name}'")
             self.driver.quit()
             return
 
-        register_download(self.book_id, self)
+        if not register_download(self.book_id, self):
+            print(f"{Fore.RED}A download is already running for '{self.book_name}' — skipping.")
+            self.driver.quit()
+            return
+        # Remember the book's pre-redownload status so a partial redownload
+        # (count/range) does not mislabel a partially-downloaded book.
+        pre_status = self.db.get_book(self.book_id).get('download_status')
         self.db.update_book_status(book_id=self.book_id, download_status='in_progress')
 
-        if all_chapters:
+        if count is not None and count > 0:
+            chapters_to_process = list(self.chapters[:count])
+            label = f"first {count}"
+        elif start_order is not None or end_order is not None:
+            lo = start_order or 0
+            hi = end_order or 10**9
+            chapters_to_process = [c for c in self.chapters if lo <= c['chapter_order'] <= hi]
+            label = f"order {lo}-{hi}"
+        elif all_chapters:
             chapters_to_process = list(self.chapters)
             label = "all"
         else:
@@ -472,27 +514,33 @@ class TruyenWikiDownloader:
                     time.sleep(random.randint(2, 4))
 
         finally:
-            try:
-                self._export_docx(self.output_docx)
-                print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
-            except Exception as e:
-                print(f"{Fore.RED}DOCX export failed: {e}")
+            if self.auto_export_docx:
+                try:
+                    self._export_docx(self.output_docx)
+                    print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
+                except Exception as e:
+                    print(f"{Fore.RED}DOCX export failed: {e}")
+            else:
+                print(f"{Fore.CYAN}Auto DOCX export disabled — skipping export.")
             self.driver.quit()
 
         total_duration = time.time() - start_total
-        # new_status = 'cancelled' if cancelled else ('completed' if fail_count == 0 else 'completed_with_errors')
-        remaining_pending = len([c for c in self.chapters if c['download_status'] == 'pending'])
+        # Only change the book status if the redownload actually completed the
+        # whole book (no pending/failed chapters left). Otherwise keep the
+        # pre-redownload status so a partial (count/range) redownload of a
+        # partially-downloaded book is not mislabeled.
+        fresh = self.db.get_chapters_by_book(self.book_id)
+        remaining_pending = len([c for c in fresh if c['download_status'] == 'pending'])
+        remaining_failed = len([c for c in fresh if c['download_status'] == 'failed'])
         if cancelled:
             new_status = 'cancelled'
-        elif remaining_pending:
-            new_status = 'paused'          # still has pending chapters → don't claim complete
-        elif fail_count == 0:
-            new_status = 'completed'
+        elif not remaining_pending and not remaining_failed:
+            new_status = 'completed' if fail_count == 0 else 'completed_with_errors'
         else:
-            new_status = 'completed_with_errors'
+            new_status = pre_status or 'pending'
         self.db.update_book_status(
             book_id=self.book_id, download_status=new_status,
-            downloaded_chapters=len([c for c in self.chapters if c['download_status'] == 'completed'])
+            downloaded_chapters=len([c for c in fresh if c['download_status'] == 'completed'])
         )
         self.db.log_request(
             "book_download",
@@ -511,7 +559,10 @@ class TruyenWikiDownloader:
             self.driver.quit()
             return
 
-        register_download(self.book_id, self)
+        if not register_download(self.book_id, self):
+            print(f"{Fore.RED}A download is already running for '{self.book_name}' — skipping.")
+            self.driver.quit()
+            return
         self._success_count = 0
         self._fail_count = 0
         self._current_index = 1
@@ -544,11 +595,14 @@ class TruyenWikiDownloader:
             raise
 
         finally:
-            try:
-                self._export_docx(self.output_docx)
-                print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
-            except Exception as e:
-                print(f"{Fore.RED}DOCX export failed: {e}")
+            if self.auto_export_docx:
+                try:
+                    self._export_docx(self.output_docx)
+                    print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
+                except Exception as e:
+                    print(f"{Fore.RED}DOCX export failed: {e}")
+            else:
+                print(f"{Fore.CYAN}Auto DOCX export disabled — skipping export.")
             self.driver.quit()
             unregister_download(self.book_id)
 
@@ -580,11 +634,19 @@ def download_book(book_name: str, max_chapters: int = None):
         raise
 
 
-def redownload_book(book_name: str, all_chapters: bool = False):
-    """Re-download chapters for a book into _redownload.docx."""
+def redownload_book(book_name: str, all_chapters: bool = False,
+                    count: int = None, start_order: int = None,
+                    end_order: int = None):
+    """Re-download chapters for a book into _redownload.docx.
+
+    all_chapters=True re-downloads every chapter; otherwise only failed ones.
+    count / start_order / end_order select a subset by chapter order and take
+    precedence over all_chapters.
+    """
     downloader = TruyenWikiDownloader(book_name, redownload=True)
     try:
-        downloader.run_redownload(all_chapters=all_chapters)
+        downloader.run_redownload(all_chapters=all_chapters, count=count,
+                                  start_order=start_order, end_order=end_order)
     except Exception as e:
         print(f"❌ Error re-downloading book '{book_name}': {e}")
         raise
