@@ -92,6 +92,7 @@ export const translateApi = {
   getBook: (id) => api.get(`/translate/books/${id}`),
   corrections: (id) => api.get(`/translate/books/${id}/corrections`),
   updateCorrections: (id, corrections) => api.put(`/translate/books/${id}/corrections`, { corrections }),
+  copyCorrections: (id, sourceBookId) => api.post(`/translate/books/${id}/corrections/copy`, { source_book_id: sourceBookId }),
   run: (id, method = 'api', maxChapters = null) => api.post(`/translate/books/${id}/run`, null, { params: { method, max_chapters: maxChapters } }),
   retranslate: (id, method = 'api') => api.post(`/translate/books/${id}/retranslate`, null, { params: { method } }),
   continueRun: (id, method = 'api') => api.post(`/translate/books/${id}/continue`, null, { params: { method } }),

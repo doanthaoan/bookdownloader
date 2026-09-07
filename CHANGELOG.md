@@ -12,6 +12,12 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.4.7] — 2026-08-23
+
+### Added
+
+- **Copy corrections between books** — new `POST /api/translate/books/{book_id}/corrections/copy` endpoint replaces the target book's corrections with ALL corrections of a source book (validates source exists, rejects same-book copy, preserves enabled state and order). In Book Details → Corrections popup, a "Copy from another book" section accepts a source book ID and copies with a confirmation prompt.
+
 ## [1.4.6] — 2026-08-17
 
 ### Added

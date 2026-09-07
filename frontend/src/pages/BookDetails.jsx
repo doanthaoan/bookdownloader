@@ -47,6 +47,8 @@ const BookDetails = ({ bookId, onBack }) => {
   // Per-book corrections
   const [corrections, setCorrections] = useState([]);
   const [correctionsOpen, setCorrectionsOpen] = useState(false);
+  const [copySourceId, setCopySourceId] = useState('');
+  const [copyingCorrections, setCopyingCorrections] = useState(false);
   const correctionsOpenRef = useRef(false);
 
   useEffect(() => {
@@ -412,6 +414,28 @@ const BookDetails = ({ bookId, onBack }) => {
     setCorrections(prev => prev.map((c, i) => i === idx ? { ...c, [field]: value } : c));
   };
 
+  const handleCopyCorrections = async () => {
+    const sid = parseInt(copySourceId, 10);
+    if (!sid || sid === bookId) {
+      alert('Enter a valid source book ID (different from this book).');
+      return;
+    }
+    const currentCount = corrections.filter(c => (c.find_text || '').trim()).length;
+    if (!confirm(`Replace all ${currentCount} correction(s) of this book with the corrections of book #${sid}?`)) return;
+    setCopyingCorrections(true);
+    try {
+      const res = await translateApi.copyCorrections(bookId, sid);
+      const data = res.data || res;
+      setCorrections(data.corrections || []);
+      setCopySourceId('');
+      alert(data.message || 'Corrections copied.');
+    } catch (err) {
+      alert('Copy failed: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setCopyingCorrections(false);
+    }
+  };
+
   if (loading) return <div className="text-center py-10 text-gray-500">Loading book details...</div>;
   if (!book) return <div className="text-center py-10 text-red-500">Book not found</div>;
 
@@ -545,6 +569,21 @@ const BookDetails = ({ bookId, onBack }) => {
               className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium transition">
               Save Corrections
             </button>
+          </div>
+          <div className="mt-4 pt-3 border-t border-gray-100">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Copy from another book</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input type="number" min="1" value={copySourceId}
+                onChange={e => setCopySourceId(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleCopyCorrections(); }}
+                placeholder="Source book ID"
+                className="w-36 border rounded px-2 py-1.5 text-sm" />
+              <button onClick={handleCopyCorrections} disabled={copyingCorrections}
+                className="text-sm border border-indigo-300 text-indigo-600 hover:bg-indigo-50 px-3 py-1.5 rounded transition disabled:opacity-50">
+                {copyingCorrections ? 'Copying…' : 'Copy Corrections'}
+              </button>
+              <span className="text-xs text-gray-400">Replaces this book's corrections.</span>
+            </div>
           </div>
         </Modal>
 

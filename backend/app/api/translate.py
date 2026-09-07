@@ -255,6 +255,31 @@ async def set_corrections(book_id: int, req: CorrectionsRequest):
     return {"message": "Corrections saved."}
 
 
+class CopyCorrectionsRequest(BaseModel):
+    source_book_id: int
+
+
+@router.post("/books/{book_id}/corrections/copy")
+async def copy_corrections(book_id: int, req: CopyCorrectionsRequest):
+    """Replace this book's corrections with ALL corrections of another book."""
+    if req.source_book_id == book_id:
+        raise HTTPException(status_code=400, detail="Source and target are the same book.")
+    source = db.get_book(req.source_book_id)
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Source book {req.source_book_id} not found.")
+    corrections = db.get_book_corrections(req.source_book_id)
+    db.set_book_corrections(book_id, [
+        {"find_text": c["find_text"], "replace_text": c["replace_text"], "enabled": bool(c["enabled"])}
+        for c in corrections
+    ])
+    return {
+        "message": f"Copied {len(corrections)} correction(s) from \"{source['title']}\".",
+        "copied": len(corrections),
+        "source_title": source["title"],
+        "corrections": db.get_book_corrections(book_id),
+    }
+
+
 # --- Run / progress ---
 
 @router.post("/books/{book_id}/run")
