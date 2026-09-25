@@ -26,7 +26,8 @@ _lock = threading.Lock()
 
 # Chapter title pattern used when parsing raw TXT files.
 # Matches lines like "12. 第1章 xxx" or "第1章 xxx"
-CHAPTER_SPLIT_RE = re.compile(r"(?=\b\d+\.\s第\d+[章话])|(?=^第\s*\d+\s*[章话])", re.MULTILINE)
+CHAPTER_SPLIT_RE = re.compile(r"(?=\b\d+\.\s第\d+[章话])|(?=^[ \t　]*第\s*\d+\s*[章话])", re.MULTILINE)
+CHAPTER_NO_RE = re.compile(r"^(?:\d+\.\s)?第\s*(\d+)\s*[章话]")
 
 # Split text into translation chunks at paragraph boundaries (avoids very long single requests).
 MAX_CHUNK_CHARS = 1200
@@ -138,11 +139,23 @@ def parse_raw_file(path: str) -> dict:
         summary_lines.append(l)
 
     chapters = []
-    for i, part in enumerate(parts[1:], 1):
-        sub = part.split("\n", 1)
-        title = sub[0].strip()
-        content = sub[1].strip() if len(sub) > 1 else ""
-        chapters.append({"order": i, "title": title, "content": content})
+    def chapter_no(line: str):
+        m = CHAPTER_NO_RE.match(line.strip())
+        return m.group(1) if m else None
+
+    for part in parts[1:]:
+        title, _, content = part.partition("\n")
+        title, content = title.strip(), content.strip()
+        # Drop the title if it's repeated as the first line of the content
+        # (compared by chapter number — the repeat often differs in punctuation)
+        first, _, rest = content.partition("\n")
+        if chapter_no(first) and chapter_no(first) == chapter_no(title):
+            content = rest.strip()
+        # A repeated heading line splits off as its own part — merge it into the previous chapter
+        if chapters and chapter_no(title) == chapter_no(chapters[-1]["title"]):
+            chapters[-1]["content"] = "\n".join(filter(None, [chapters[-1]["content"], content]))
+            continue
+        chapters.append({"order": len(chapters) + 1, "title": title, "content": content})
 
     return {
         "raw_title": raw_title,

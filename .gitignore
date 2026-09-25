@@ -35,3 +35,7 @@ Thumbs.db
 
 # Node (fallback; frontend/.gitignore also covers these)
 node_modules/
+
+# AI Agent
+agent/agent.db
+.claude/
