@@ -18,6 +18,7 @@ backend/data/novel_downloader.db-*
 backend/data/downloads/
 backend/data/logs/
 backend/data/translate_src/
+raw/
 
 # But keep the schema file tracked
 !backend/data/database_schema.sql
