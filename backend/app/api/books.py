@@ -28,6 +28,7 @@ from pathlib import Path
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
+import mimetypes
 import os
 import sqlite3
 import shutil
@@ -134,7 +135,11 @@ class UpdateBookInfoRequest(BaseModel):
 @router.get("/")
 def get_all_books(search: str = None, status: str = None, author: str = None,
                          book_web_status: str = None, sent: int = None, tag: str = None,
-                         page: int = 1, per_page: int = 50):
+                         # Query(default, ge=, le=) validates the number: FastAPI
+                         # answers 422 for page=0 / per_page=0 instead of crashing
+                         # with ZeroDivisionError in the total_pages maths below.
+                         # le=1000 because the Dashboard asks for 1000 books at once.
+                         page: int = Query(1, ge=1), per_page: int = Query(50, ge=1, le=1000)):
     """Fetch all books with optional search, status filter, author, book_web_status, sent, and pagination.
 
     GET /api/books/
@@ -162,8 +167,6 @@ def get_all_books(search: str = None, status: str = None, author: str = None,
             WHERE (title LIKE ? OR seo_title_basic LIKE ?) AND is_sent = ?
             params = ["%abc%", "%abc%", 1]
     """
-    # TODO: page/per_page are unvalidated: per_page=0 crashes with ZeroDivisionError
-    # (HTTP 500) in total_pages. Declare them as Query(1, ge=1) / Query(50, ge=1, le=200).
     conn = db._get_connection()
     # Row factory makes rows behave like dicts (row['title']) so dict(r) works below.
     # Note: this sets it on the shared per-thread connection, not just this query.
@@ -621,15 +624,14 @@ def get_cover_image(book_id: int):
     for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
         local_file = save_dir / f"{basename}{ext}"
         if local_file.exists():
-            # TODO: gif/webp are served as image/png; mimetypes.guess_type() would
-            # give the right type (browsers usually sniff it anyway).
-            media_type = "image/jpeg" if local_file.suffix.lower() in ('.jpg', '.jpeg') else "image/png"
+            # mimetypes (stdlib) maps a file extension to its MIME type:
+            # .jpg -> image/jpeg, .gif -> image/gif, .webp -> image/webp ...
+            # guess_type() returns (type, encoding); `[0]` takes the type.
+            media_type = mimetypes.guess_type(local_file.name)[0] or "application/octet-stream"
             return FileResponse(path=str(local_file), media_type=media_type)
 
     # No local file — redirect to remote URL if stored
     if book.get('cover_image_url'):
-        # TODO: redundant -- RedirectResponse is already imported at the top.
-        from fastapi.responses import RedirectResponse
         return RedirectResponse(url=book['cover_image_url'])
 
     raise HTTPException(status_code=404, detail="No cover image available for this book")

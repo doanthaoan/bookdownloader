@@ -16,6 +16,7 @@ import here could create a circular import at startup.
 """
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Absolute path of the `backend/` folder. `__file__` is backend/app/config.py,
 # so `.parent` is backend/app and `.parent.parent` is backend/.
@@ -60,6 +61,32 @@ USER_AGENT_DEFAULT = (
 )
 
 
+def normalize_domain(domain: str) -> tuple:
+    """Turn whatever the user typed as the site domain into the two forms we need.
+
+    Accepts "wikicv.org", ".wikicv.org", "https://wikicv.org" or
+    "https://wikicv.org/some/path" — all give the same result.
+
+    Args:
+        domain: the raw setting value.
+
+    Returns:
+        (book_domain, cookie_domain), e.g. ("https://wikicv.org", ".wikicv.org").
+        book_domain is used to build page URLs; cookie_domain (leading dot)
+        makes Selenium cookies valid for the site and all its subdomains.
+
+    Pure function (no DB, no globals), so tests/test_render.py can check it.
+    """
+    domain = domain.strip()
+    # urlparse only finds the host when a scheme is present ("//" part), so add
+    # one when the user typed a bare host name.
+    url = domain if '://' in domain else f'https://{domain.lstrip(".")}'
+    parsed = urlparse(url)
+    # .hostname is the host only (no scheme, port or path), lower-cased.
+    host = (parsed.hostname or '').lstrip('.')
+    return f'{parsed.scheme}://{host}', f'.{host}'
+
+
 def load_truyenwiki_config():
     """Refresh the TRUYENWIKI dict from DB settings.
 
@@ -73,8 +100,8 @@ def load_truyenwiki_config():
 
     Side effects: reads the DB; mutates the module-level TRUYENWIKI dict.
 
-    TODO: call this again after the Settings API saves 'domain' so a domain
-    change applies without restarting the server.
+    Called at startup AND by the Settings API after 'domain' / 'book_path' /
+    'logs_path' are saved, so a change applies without restarting the server.
     """
     from app.database import get_database
     db = get_database()
@@ -83,15 +110,9 @@ def load_truyenwiki_config():
     book_path = db.get_setting('book_path') or './data'
     logs_path = db.get_setting('logs_path') or './data/logs'
 
-    if domain:
-        domain = domain.strip()
-        if not domain.startswith('http'):
-            TRUYENWIKI['book_domain'] = f'https://{domain}'
-        else:
-            TRUYENWIKI['book_domain'] = domain
-        # TODO: when domain includes "https://", cookie_domain becomes
-        # ".https://..." — strip the scheme (urlparse(...).hostname) first.
-        TRUYENWIKI['cookie_domain'] = f'.{domain.lstrip(".")}' if not domain.startswith('.') else domain
+    if domain.strip():
+        # Tuple unpacking: normalize_domain returns two values at once.
+        TRUYENWIKI['book_domain'], TRUYENWIKI['cookie_domain'] = normalize_domain(domain)
     TRUYENWIKI['book_path'] = book_path
     TRUYENWIKI['logs_path'] = logs_path
 

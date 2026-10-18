@@ -12,6 +12,20 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.4.11] — 2026-10-19
+
+### Fixed
+
+- **A domain typed with `https://` works.** The new `config.normalize_domain()` turns `wikicv.org`, `.wikicv.org` or `https://wikicv.org/` into the same page URL and cookie domain. The cookie domain used to come out as `.https://…`.
+- **A domain change applies without a restart.** Saving `domain`, `book_path` or `logs_path` (through `update-setting` or `update-truyenwiki`) reloads the config with the same code that runs at startup.
+- **`GET /api/books/?per_page=0` no longer crashes.** `page` and `per_page` are validated (`page` ≥ 1, `per_page` 1–1000) and invalid values get HTTP 422.
+- **Path-traversal guards.** Translate source files (parse, delete, create book, upload) go through one `_source_file()` guard: the folder part is dropped and the path must stay inside the source folder. The log viewer now uses an exact `is_relative_to` check instead of a string prefix.
+- **No leaked Chrome.** The translate `/check` probe and the summary translation now close the Translator in `finally`.
+- **Cover images are served with the right type** (`image/gif`, `image/webp`, …) via `mimetypes`.
+- `tests/test_render.py` has 2 new checks (domain normalizer, filename guard), for 9 in total.
+
+---
+
 ## [1.4.10] — 2026-10-18
 
 ### Changed (refactor — no new features)

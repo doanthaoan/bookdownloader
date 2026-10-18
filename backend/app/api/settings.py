@@ -14,11 +14,14 @@ param such as ``cookies: Dict[str, str]`` is read from the JSON request body.
 """
 from fastapi import APIRouter, HTTPException
 from app.database import get_database
-from app.config import TRUYENWIKI, COOKIE_KEYS, get_cookies
+from app.config import TRUYENWIKI, COOKIE_KEYS, get_cookies, load_truyenwiki_config
 from app.services.login import auto_login
 from typing import Dict
 
 router = APIRouter()
+
+# Settings that feed the in-memory TRUYENWIKI dict (see config.load_truyenwiki_config).
+SITE_CONFIG_KEYS = {"domain", "book_path", "logs_path"}
 db = get_database()
 
 
@@ -93,9 +96,13 @@ def update_setting(key: str, value: str):
 
     Generic key/value write used by many UI pages (translate options, chapter
     limits, ...). No allow-list: any key is accepted.
-    Side effect: upserts one row in the settings table.
+    Side effects: upserts one row in the settings table; for the site keys
+    (domain / book_path / logs_path) also refreshes the in-memory TRUYENWIKI
+    config, so the change applies without restarting the server.
     """
     db.update_setting(key, value)
+    if key in SITE_CONFIG_KEYS:
+        load_truyenwiki_config()
     return {"message": f"Setting {key} updated successfully."}
 
 
@@ -108,31 +115,21 @@ def update_truyenwiki(domain: str = None, book_path: str = None, logs_path: str 
 
     Side effects:
       * persists each given value in the settings table, AND
-      * mutates the in-memory ``TRUYENWIKI`` dict so the change takes effect
-        immediately without restarting the server.
+      * reloads the in-memory ``TRUYENWIKI`` dict (load_truyenwiki_config) so
+        the change takes effect immediately without restarting the server.
 
     Why mutating works: ``TRUYENWIKI`` is one dict object shared by every module
     that imported it, so changing its keys in place is visible everywhere.
     (Reassigning ``TRUYENWIKI = {...}`` here would NOT be.)
     """
-    if domain:
-        domain = domain.strip()
-        db.update_setting("domain", domain)
-        # "example.com" -> "https://example.com"; values already starting with http are kept.
-        derived_domain = f'https://{domain}' if not domain.startswith('http') else domain
-        # Cookie domain gets a leading dot so cookies apply to all sub-domains.
-        # TODO: if `domain` was entered with a scheme ("https://x.com") this yields
-        # ".https://x.com"; strip the scheme first. (lstrip(".") is also redundant
-        # inside a branch that already knows there is no leading dot.)
-        cookie_domain = f'.{domain.lstrip(".")}' if not domain.startswith('.') else domain
-        TRUYENWIKI['book_domain'] = derived_domain
-        TRUYENWIKI['cookie_domain'] = cookie_domain
-    if book_path:
-        db.update_setting("book_path", book_path)
-        TRUYENWIKI['book_path'] = book_path
-    if logs_path:
-        db.update_setting("logs_path", logs_path)
-        TRUYENWIKI['logs_path'] = logs_path
+    # locals() trick avoided on purpose: an explicit dict is easier to read.
+    # Only the values that were actually sent (truthy) are saved.
+    for key, value in {"domain": domain, "book_path": book_path, "logs_path": logs_path}.items():
+        if value:
+            db.update_setting(key, value.strip())
+    # Rebuild TRUYENWIKI from the DB with the same code as at startup
+    # (config.normalize_domain), so the two paths can never disagree.
+    load_truyenwiki_config()
 
     return {"message": "Site configuration updated successfully."}
 

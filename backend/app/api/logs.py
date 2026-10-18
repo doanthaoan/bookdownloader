@@ -18,12 +18,6 @@ from app.config import logs_dir
 router = APIRouter()
 
 
-def _get_logs_dir() -> Path:
-    """Absolute logs folder from the `logs_path` setting (created if missing)."""
-    # TODO: this wrapper only forwards to logs_dir(); call logs_dir() directly.
-    return logs_dir()
-
-
 @router.get("/")
 def list_logs(search: str = None):
     """GET /api/logs/ -- list the available ``.txt`` log files.
@@ -36,13 +30,12 @@ def list_logs(search: str = None):
 
     Read-only; no side effects (except logs_dir() creating the folder if missing).
     """
-    # Note: this local variable shadows the imported logs_dir() function inside
-    # this function body. Legal Python, but easy to trip over.
-    logs_dir = _get_logs_dir()
+    # Named `folder` (not `logs_dir`) so it doesn't shadow the imported logs_dir() function.
+    folder = logs_dir()
     files = []
-    for f in os.listdir(logs_dir):
+    for f in os.listdir(folder):
         if f.endswith('.txt'):
-            fpath = os.path.join(logs_dir, f)
+            fpath = os.path.join(folder, f)
             if search and search.lower() not in f.lower():
                 continue
             files.append({
@@ -77,9 +70,9 @@ def read_log(filename: str, lines: int = Query(100, ge=1, le=5000), offset: int 
     Errors: 403 if the path escapes the logs folder, 404 if the file is missing.
     Read-only.
     """
-    logs_dir = _get_logs_dir()
+    folder = logs_dir()
     # Path objects overload "/" to join path segments.
-    fpath = logs_dir / filename
+    fpath = folder / filename
 
     # Security: prevent path traversal.
     # A request like GET /api/logs/../../app/config.py would otherwise read any
@@ -87,11 +80,10 @@ def read_log(filename: str, lines: int = Query(100, ge=1, le=5000), offset: int 
     # then we check the result still lives inside the logs folder.
     try:
         fpath = fpath.resolve()
-        logs_dir_resolved = logs_dir.resolve()
-        # TODO: a plain string prefix check also accepts sibling folders that share
-        # the prefix (e.g. ".../logs_old/x.txt" starts with ".../logs").
-        # fpath.is_relative_to(logs_dir_resolved) (Python 3.9+) is the exact check.
-        if not str(fpath).startswith(str(logs_dir_resolved)):
+        # is_relative_to() checks real path containment. A plain string
+        # startswith() would also accept a sibling folder such as
+        # ".../logs_old/x.txt", because it starts with ".../logs".
+        if not fpath.is_relative_to(folder.resolve()):
             raise HTTPException(status_code=403, detail="Access denied")
     except (ValueError, OSError):
         # resolve() can fail on malformed/invalid paths -- treat as denied too.

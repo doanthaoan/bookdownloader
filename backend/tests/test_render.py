@@ -122,6 +122,30 @@ def check_final_status():
     assert status(task, False, False, 3, 0, done) == "cancelled"
 
 
+def check_domain_normalizer():
+    """Every way of typing the site domain gives the same URL + cookie domain."""
+    from app.config import normalize_domain
+    for typed in ["wikicv.org", ".wikicv.org", "https://wikicv.org", "https://wikicv.org/", " WikiCV.org "]:
+        assert normalize_domain(typed) == ("https://wikicv.org", ".wikicv.org"), typed
+
+
+def check_source_file_guard():
+    """Raw-TXT filenames from the client can't escape the source folder."""
+    from fastapi import HTTPException
+    from app.api.translate import _source_dir, _source_file
+    folder = _source_dir().resolve()
+    assert _source_file("book.txt") == folder / "book.txt"
+    # basename() strips the folders, so a traversal attempt stays inside the folder.
+    assert _source_file("..\\..\\app\\config.py") == folder / "config.py"
+    assert _source_file("../../app/config.py") == folder / "config.py"
+    for bad in ["", "..", "."]:
+        try:
+            _source_file(bad)
+            raise AssertionError(f"expected HTTP 400 for {bad!r}")  # !r = repr(), shows the quotes
+        except HTTPException as e:
+            assert e.status_code == 400
+
+
 if __name__ == "__main__":
     # Run every function whose name starts with "check_" (in definition order).
     checks = [f for name, f in list(globals().items()) if name.startswith("check_")]

@@ -59,6 +59,34 @@ def _source_dir() -> Path:
     return path
 
 
+def _source_file(filename: str) -> Path:
+    """Safe path of a raw TXT file inside the source folder (path-traversal guard).
+
+    The filename comes from the client (URL, query string or JSON body), so it
+    could be something like "..\\..\\app\\config.py" trying to reach files
+    outside the folder. Two layers stop that:
+      1. os.path.basename() keeps only the last part ("config.py"), dropping
+         any folders the client tried to add.
+      2. resolve() makes the path absolute (following "..") and
+         is_relative_to() checks it is still inside the source folder.
+
+    Args:
+        filename: name sent by the client.
+
+    Returns:
+        Absolute Path inside the source folder (the file may not exist).
+
+    Raises:
+        HTTPException 400: empty or invalid name.
+    """
+    folder = _source_dir().resolve()
+    name = os.path.basename(filename or "")
+    path = (folder / name).resolve()
+    if not name or not path.is_relative_to(folder) or path == folder:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return path
+
+
 # --- Preparation / files ---
 
 @router.get("/prepare")
@@ -115,9 +143,11 @@ def check():
     Side effect: makes a real network request to the translation API.
     """
     t = Translator()
-    api_ok = t.api_available()
-    # TODO: wrap in try/finally so t.close() also runs if api_available() raises.
-    t.close()
+    # try/finally: close() runs even if the probe raises, so no Chrome is leaked.
+    try:
+        api_ok = t.api_available()
+    finally:
+        t.close()
     return {
         "api_available": api_ok,
         "method": "api" if api_ok else "web",
@@ -164,8 +194,8 @@ def upload_source_file(file: UploadFile = File(...)):
     # Sanitize filename
     # basename() drops any directory part a client might send ("../../x.txt" ->
     # "x.txt"), so the upload cannot be written outside the source folder.
-    safe_name = os.path.basename(filename)
-    dest = _source_dir() / safe_name
+    dest = _source_file(filename)  # same guard as delete/parse/create
+    safe_name = dest.name
     # copyfileobj streams the upload to disk in chunks.
     with dest.open("wb") as out:
         shutil.copyfileobj(file.file, out)
@@ -179,11 +209,7 @@ def delete_source_file(filename: str):
     Errors: 404 if the file does not exist.
     Side effect: deletes the file from disk (books already created from it are untouched).
     """
-    # TODO: no traversal guard here. "/" can't appear in the path param, but on
-    # Windows a URL-encoded "\" ("..%5C..%5Cx") can. Apply os.path.basename()
-    # as /upload does (same for /parse and POST /books, which take the name
-    # from a query param / JSON body).
-    dest = _source_dir() / filename
+    dest = _source_file(filename)
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File not found")
     dest.unlink()
@@ -199,7 +225,7 @@ def parse_file(filename: str):
     plus ``"filename"``. Errors: 404 if the file is missing.
     Read-only: nothing is saved yet.
     """
-    dest = _source_dir() / filename
+    dest = _source_file(filename)
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File not found")
     result = parse_raw_file(str(dest))
@@ -267,7 +293,7 @@ def create_translated_book(req: CreateBookRequest, background_tasks: BackgroundT
     Side effects: inserts the book (is_translated=1, status "Parsed") and one
     chapter row per parsed chapter; schedules a background summary translation.
     """
-    dest = _source_dir() / req.filename
+    dest = _source_file(req.filename)
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File not found")
     parsed = parse_raw_file(str(dest))
@@ -306,17 +332,19 @@ def create_translated_book(req: CreateBookRequest, background_tasks: BackgroundT
         # scope. BackgroundTasks runs it AFTER the HTTP response has been sent,
         # so the client gets its book_id immediately.
         def translate_summary():
+            t = Translator()
+            # try/except/finally: `except` reports the error (the book is already
+            # saved, the summary is best-effort); `finally` ALWAYS closes the
+            # Translator, so a browser opened by the web method is never leaked.
             try:
-                t = Translator()
                 translated = t.translate(summary)
                 if translated and translated.strip():
                     db.update_book_info(book_id, short_description=translated.strip())
                     print(f"📝 Summary translated for book {book_id}")
-                # TODO: move t.close() into a finally block; on an exception the
-                # Translator (and any browser it opened) is never closed.
-                t.close()
             except Exception as e:
                 print(f"{Fore.YELLOW}Summary translation failed (book saved without summary): {e}")
+            finally:
+                t.close()
         background_tasks.add_task(translate_summary)
 
     return {"book_id": book_id, "message": f"Book '{req.title}' created with {len(parsed['chapters'])} chapters."}

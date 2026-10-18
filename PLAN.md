@@ -45,12 +45,12 @@ Frontend:
 18. [x] **S** About 15 call sites show only `err.message` and lose the backend `detail`. Fix: add one `errMsg(err)` helper in `api/index.js`.
 
 Follow-ups found during the 1.4.9 comment pass (each has a `TODO` in the code):
-19. [ ] **S** `config.py` / `settings.update_truyenwiki`: a domain saved with `https://` gives the cookie domain `.https://…`. Strip the scheme first. (The current setting `wikicv.org` is not affected.)
-20. [ ] **S** `GET /books/?per_page=0` crashes with ZeroDivisionError. Validate `page` / `per_page` with `Query(ge=1)`.
-21. [ ] **S** `translate.py` `delete_source_file`, `/parse` and `POST /books` don't `os.path.basename()` the filename (path traversal). `logs.py` checks with `startswith`; use `Path.is_relative_to`.
-22. [ ] **S** `translate.py` `/check` and the summary task call `t.close()` outside `finally`, so an error leaks a Chrome process.
-23. [ ] **S** Changing the domain needs a server restart. Re-run `load_truyenwiki_config()` after saving it.
-24. [ ] **S** `get_cover_image` serves gif/webp covers as `image/png`. Use `mimetypes.guess_type`.
+19. [x] **S** `config.py` / `settings.update_truyenwiki`: a domain saved with `https://` gives the cookie domain `.https://…`. Strip the scheme first. (The current setting `wikicv.org` is not affected.)
+20. [x] **S** `GET /books/?per_page=0` crashes with ZeroDivisionError. Validate `page` / `per_page` with `Query(ge=1)`.
+21. [x] **S** `translate.py` `delete_source_file`, `/parse` and `POST /books` don't `os.path.basename()` the filename (path traversal). `logs.py` checks with `startswith`; use `Path.is_relative_to`.
+22. [x] **S** `translate.py` `/check` and the summary task call `t.close()` outside `finally`, so an error leaks a Chrome process.
+23. [x] **S** Changing the domain needs a server restart. Re-run `load_truyenwiki_config()` after saving it.
+24. [x] **S** `get_cover_image` serves gif/webp covers as `image/png`. Use `mimetypes.guess_type`.
 
 ## Phase 2 — Structural refactor (dedupe)
 
