@@ -17,6 +17,7 @@ from colorama import Fore, init
 
 from app.config import TRUYENWIKI, get_user_agent
 from app.database import get_database
+from app.services.browser import load_page
 
 init(autoreset=True)
 
@@ -273,6 +274,7 @@ class Translator:
         from selenium.webdriver.chrome.service import Service
         from selenium.webdriver.chrome.options import Options
         from webdriver_manager.chrome import ChromeDriverManager
+        from app.services.browser import harden_options, harden_driver
 
         options = Options()
         options.add_argument("--no-sandbox")
@@ -281,10 +283,11 @@ class Translator:
         # NOTE: do NOT force a custom user-agent here. cf_clearance cookies are
         # bound to the exact UA + TLS fingerprint that solved the Cloudflare
         # challenge. Chrome's real UA must match the user's browser.
-        self.driver = webdriver.Chrome(
+        harden_options(options)
+        self.driver = harden_driver(webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=options
-        )
+        ))
 
     def _inject_cookies(self, driver):
         """Inject stored cookies (e.g. cf_clearance) into the current page."""
@@ -319,9 +322,9 @@ class Translator:
 
         self._ensure_driver()
         driver = self.driver
-        driver.get(self.site)
+        load_page(driver, self.site)
         self._inject_cookies(driver)
-        driver.get(self.site)
+        load_page(driver, self.site)
 
         deadline = time.time() + self.cookie_wait
         loaded = None
@@ -355,11 +358,11 @@ class Translator:
 
         self._ensure_driver()
         driver = self.driver
-        driver.get(self.site)
+        load_page(driver, self.site)
 
         # Inject cookies after first navigation (page context exists), then reload
         self._inject_cookies(driver)
-        driver.get(self.site)
+        load_page(driver, self.site)
 
         wait = WebDriverWait(driver, 30)
 

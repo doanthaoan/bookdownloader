@@ -20,6 +20,7 @@ from colorama import Fore, init
 from app.config import TRUYENWIKI, get_cookies, get_user_agent
 from app.database import get_database
 from app.services.text_cleaner import TextCleaner
+from app.services.browser import harden_options, harden_driver, load_page
 from app.services.docx_exporter import (build_book_docx, build_render_rules,
                                         collapse_blank_lines)
 
@@ -146,12 +147,13 @@ class TruyenWikiDownloader:
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled") 
         chrome_options.add_argument(f"user-agent={get_user_agent()}")
+        harden_options(chrome_options)
         
         driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=chrome_options
         )
-        return driver
+        return harden_driver(driver)
     
     def _inject_cookies(self):
         """Inject cookies into the browser session (skipped in non-session mode,
@@ -160,7 +162,7 @@ class TruyenWikiDownloader:
             print(f"{Fore.CYAN}Non-session mode — skipping cookie injection (free access).")
             return
         print(f"{Fore.CYAN}Injecting cookies...")
-        self.driver.get(self.domain)
+        load_page(self.driver, self.domain)
         
         cookie_map = get_cookies()
         print(f"{Fore.CYAN}Using cookies: {cookie_map}")
@@ -200,7 +202,7 @@ class TruyenWikiDownloader:
         # Navigate to the chapter
         t0 = time.time()
         try:
-            self.driver.get(full_url)
+            load_page(self.driver, full_url)
             
             # WAIT: Wait for the content wrapper to appear (timeout from DB settings)
             wait = WebDriverWait(self.driver, self.page_load_timeout)

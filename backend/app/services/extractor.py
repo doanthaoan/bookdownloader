@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 import requests
 from app.database import get_database
 from app.config import TRUYENWIKI, get_cookies, get_user_agent
+from app.services.browser import harden_options, harden_driver, load_page
 
 
 def download_cover_image(book_id: int, seo_title_basic: str, image_url: str, save_dir: str) -> str | None:
@@ -84,24 +85,25 @@ class ChapterListExtractor:
     def _setup_selenium(self):
         """Setup Selenium WebDriver with appropriate options"""
         chrome_options = Options()
-        chrome_options.add_argument("--headless")  # Run in background
+        # chrome_options.add_argument("--headless")  # Run in background
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_argument(f"user-agent={get_user_agent()}")
+        harden_options(chrome_options)
         
         driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=chrome_options
         )
-        return driver
+        return harden_driver(driver)
     
     def _inject_cookies(self):
         """Inject cookies for authentication"""
         if not self.driver:
             return
         
-        self.driver.get(TRUYENWIKI['book_domain'])
+        load_page(self.driver, TRUYENWIKI['book_domain'])
         
         cookie_map = get_cookies()
         domain = TRUYENWIKI['cookie_domain']
@@ -129,7 +131,7 @@ class ChapterListExtractor:
         info = {}
         t0 = time.time()
         try:
-            self.driver.get(book_url)
+            load_page(self.driver, book_url)
             time.sleep(3)
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
 
@@ -219,8 +221,10 @@ class ChapterListExtractor:
         
         t0 = time.time()
         try:
-            print(f"🔍 Loading book page: {book_url}")
-            self.driver.get(book_url)
+            # scrape_book_info usually just loaded this page — skip the second request
+            if self.driver.current_url.rstrip('/') != book_url.rstrip('/'):
+                print(f"🔍 Loading book page: {book_url}")
+                load_page(self.driver, book_url)
             all_chapters = []
             # Wait for page to load - adjust selector based on actual site structure
             wait = WebDriverWait(self.driver, 20)
@@ -368,7 +372,7 @@ class ChapterListExtractor:
                 if len(all_chapters) > 10000: 
                     break
             if not all_chapters:
-                return False, "No chapters found on the page"
+                raise Exception("No chapters found on the page")
             # Save to DB => No save to db, use save_chapters_to_db function instead to handle this after extraction
             # self.db.add_chapters(book_id, all_chapters)
             # self.db.update_book(book_id, download_status='ready_for_download', total_chargers=len(all_chapters))
@@ -508,13 +512,6 @@ class ChapterListExtractor:
             # Scrape book metadata from cover-info section
             book_info = self.scrape_book_info(book_url)
 
-            # Extract chapters from website
-            chapters = self.extract_chapter_list(book_url)
-            
-            if not chapters:
-                print(f"❌ No chapters extracted for {book_title}")
-                return False
-            
             # Get or create book in database
             book = self.db.get_book_by_title(book_title)
             if book:
@@ -563,6 +560,16 @@ class ChapterListExtractor:
                                     domain=self.domain_host, url=book_url, book_id=book_id,
                                     detail=book_title)
             
+            # Extract chapters after the book is saved, so a chapter-list failure
+            # keeps the book info; chapters can be fetched later via continue-extract.
+            chapters = self.extract_chapter_list(book_url)
+            if not chapters:
+                print(f"⚠️ Book saved (ID: {book_id}) but no chapters extracted for {book_title}. Retry later.")
+                self.db.log_request("book_extract", "failed", session_type=self.session_type,
+                                    domain=self.domain_host, url=book_url, book_id=book_id,
+                                    error="Book info saved, chapter list extraction failed")
+                return False
+
             # Save chapters to database
             self.save_chapters_to_db(book_id, chapters)
             

@@ -7,7 +7,9 @@ Two independent apps in one repo: `backend/` (FastAPI + Selenium + SQLite) and `
 There are no tests. Verification = compile-check backend + build frontend:
 
 ```powershell
-# backend (run from backend/)
+# backend (run from backend/) — always use the project venv (backend/.venv, Python 3.13).
+# System `python` on PATH is C:\Python315 and has NO project deps.
+.venv\Scripts\Activate.ps1           # once per terminal; or call .venv\Scripts\python.exe directly
 python -m py_compile app/api/<file>.py app/services/<file>.py
 uvicorn main:app --reload            # dev server on 127.0.0.1:8000
 
@@ -16,7 +18,7 @@ npm run build                        # tsc && vite build — catches syntax/impo
 ```
 
 - `npm run build` is the only frontend check: sources are plain `.jsx` (`allowJs`, `checkJs: false`), so tsc validates almost nothing but vite fails on real errors.
-- Backend deps: `pip install -r requirements.txt`. `.env` is optional (only `DOMAIN` fallback).
+- Backend deps: `pip install -r requirements.txt` inside the activated venv. Recreate the venv with `C:\laragon\bin\python\python-3.13\python.exe -m venv .venv`. `.env` is optional (only `DOMAIN` fallback).
 
 ## Architecture invariants
 

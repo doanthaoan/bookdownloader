@@ -12,6 +12,18 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.4.8] — 2026-10-18
+
+### Fixed
+
+- **Extraction "Read timed out"** — Selenium now uses the `eager` page-load strategy with a 60s page-load timeout (below Selenium's 120s HTTP read timeout). If a page never finishes loading, the partially loaded DOM is used instead of failing. The chapter list reuses the book page that `scrape_book_info` already loaded instead of requesting it a second time.
+- **Book info kept when the chapter list fails** — `process_book_chapters` now saves the book (info, tags, cover) before extracting chapters. If the chapter list fails, the book stays in the DB and its chapters can be fetched later with Continue Extract, which also sets `ready_for_download` on a book that had no chapters.
+- `extract_chapter_list` no longer returns a truthy `(False, msg)` tuple when no chapters are found.
+- **Ad/tracker blocking in all Selenium sessions** — a new `app/services/browser.py` holds the shared helpers. The extractor, downloader and translator all use them:
+  - `AD_BLOCK_PATTERNS`: ad and tracker hosts blocked through Chrome DevTools `Network.setBlockedURLs`. It covers hosts seen on wikicv book and chapter pages (tpmedia, Google Tag Manager/Analytics, DoubleClick, Facebook widget), common ad networks, and Vietnamese ad networks (admicro, eclick, adtima…). Cloudflare hosts are never blocked.
+  - `harden_options` / `harden_driver`: `eager` page-load strategy, a 60s page-load timeout, and the ad block.
+  - `load_page`: a `driver.get()` that falls back to the partially loaded DOM on timeout. This protects chapter downloads and translator page loads from the same "Read timed out" hang.
+
 ## [1.4.7] — 2026-08-23
 
 ### Added

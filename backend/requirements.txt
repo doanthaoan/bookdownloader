@@ -8,3 +8,4 @@ beautifulsoup4
 python-docx
 colorama
 unidecode
+requests

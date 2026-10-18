@@ -746,7 +746,9 @@ async def continue_extract(book_id: int, background_tasks: BackgroundTasks):
                 )
 
             total = len(existing) + len(new_chapters)
-            db.update_book_status(book_id=book_id, total_chapters=total)
+            # Book saved earlier without chapters (chapter list failed) → now downloadable
+            db.update_book_status(book_id=book_id, total_chapters=total,
+                                  download_status=None if existing else 'ready_for_download')
             print(f"✅ Added {len(new_chapters)} new chapters to {book['title']} (total: {total})")
 
         finally:
