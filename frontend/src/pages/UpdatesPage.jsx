@@ -1,13 +1,21 @@
 import React, { useState } from 'react';
-import { bookApi } from '../api';
+import { bookApi, errMsg } from '../api';
+import { WEB_STATUS } from '../constants';
 import Layout from '../components/Layout';
 
+/**
+ * Updates page: asks the backend which ongoing books have new chapters
+ * and lets the user append them (continue-extract).
+ * @param {{onViewBook: (id: number) => void}} props - opens BookDetails
+ */
 const UpdatesPage = ({ onViewBook }) => {
   const [updatedBooks, setUpdatedBooks] = useState([]);
   const [loading, setLoading] = useState(false);
+  // `checked` distinguishes "never checked" from "checked, nothing new".
   const [checked, setChecked] = useState(false);
   const [message, setMessage] = useState('');
 
+  /** Run the update check (API call: bookApi.checkUpdates; sets list + message). */
   const handleCheck = async () => {
     setLoading(true);
     setMessage('');
@@ -17,18 +25,22 @@ const UpdatesPage = ({ onViewBook }) => {
       setChecked(true);
       setMessage(`Checked ${res.data.updated} book(s) with new chapters.`);
     } catch (err) {
-      setMessage('Error checking updates: ' + err.message);
+      setMessage('Error checking updates: ' + errMsg(err));
     } finally {
       setLoading(false);
     }
   };
 
+  /**
+   * Start appending new chapters for one book (API call: bookApi.continueExtract).
+   * @param {number} bookId
+   */
   const handleContinueExtract = async (bookId) => {
     try {
       await bookApi.continueExtract(bookId);
       alert('Continue extraction started. New chapters will be appended.');
     } catch (err) {
-      alert('Error: ' + err.message);
+      alert('Error: ' + errMsg(err));
     }
   };
 
@@ -36,7 +48,7 @@ const UpdatesPage = ({ onViewBook }) => {
     <Layout title="Updates" subtitle="Check ongoing books for new chapters">
       <div className="bg-white rounded-lg shadow p-6 mb-6">
         <p className="text-sm text-gray-600 mb-4">
-          Scans all books with web status <strong>"Còn tiếp"</strong> (Ongoing) or <strong>"Chưa xác minh"</strong> (Unknown)
+          Scans all books with web status <strong>"{WEB_STATUS.ONGOING}"</strong> (Ongoing) or <strong>"{WEB_STATUS.UNVERIFIED}"</strong> (Unknown)
           to see if the latest chapter has changed since your last extraction.
         </p>
         <button

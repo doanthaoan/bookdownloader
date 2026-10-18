@@ -1,22 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { textCleaningApi } from '../api';
+import { textCleaningApi, errMsg, API_ORIGIN } from '../api';
 import Layout from '../components/Layout';
 
+/** Blank form values for a new rule. `enabled` is 1/0 because SQLite stores booleans as integers. */
 const emptyRule = { rule_type: 'remove', match_type: 'simple', find_text: '', replace_text: '', enabled: 1, description: '' };
 
+/**
+ * Text Cleaning page: CRUD + ordering for the global cleaning rules, and a
+ * test tool that cleans one chapter URL and returns a DOCX to download.
+ */
 const TextCleaning = () => {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  // null = adding a new rule; a number = editing that rule id.
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState({ ...emptyRule });
   const [testUrl, setTestUrl] = useState('');
   const [testMsg, setTestMsg] = useState('');
+  const [testIsError, setTestIsError] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState('');
 
+  // Load the rules once on mount.
   useEffect(() => { fetchRules(); }, []);
 
+  /** Load all rules in order (API call: textCleaningApi.list; sets rules/loading). */
   const fetchRules = async () => {
     try {
       const res = await textCleaningApi.list();
@@ -28,18 +37,24 @@ const TextCleaning = () => {
     }
   };
 
+  /** Open the form empty for a new rule. Spreading `emptyRule` copies it so edits never mutate the constant. */
   const openAdd = () => {
     setEditingId(null);
     setForm({ ...emptyRule });
     setShowForm(true);
   };
 
+  /**
+   * Open the form pre-filled with an existing rule.
+   * @param {object} r - rule row
+   */
   const openEdit = (r) => {
     setEditingId(r.id);
     setForm({ ...r });
     setShowForm(true);
   };
 
+  /** Create or update the rule in the form (API call), then reload the list. */
   const handleSave = async () => {
     try {
       if (editingId) {
@@ -50,29 +65,36 @@ const TextCleaning = () => {
       setShowForm(false);
       fetchRules();
     } catch (err) {
-      alert('Save failed: ' + err.message);
+      alert('Save failed: ' + errMsg(err));
     }
   };
 
+  /** Delete a rule after confirmation (API call), then reload. */
   const handleDelete = async (id) => {
     if (!confirm('Delete this rule?')) return;
     try {
       await textCleaningApi.delete(id);
       fetchRules();
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      alert('Delete failed: ' + errMsg(err));
     }
   };
 
+  /** Flip a rule's enabled flag (API call), then reload. */
   const handleToggle = async (r) => {
     try {
       await textCleaningApi.update(r.id, { enabled: r.enabled ? 0 : 1 });
       fetchRules();
     } catch (err) {
-      alert('Toggle failed: ' + err.message);
+      alert('Toggle failed: ' + errMsg(err));
     }
   };
 
+  /**
+   * Move a rule up or down one position (API call: reorder), then reload.
+   * @param {number} id - rule id
+   * @param {-1|1} dir - -1 = up, 1 = down
+   */
   const handleMove = async (id, dir) => {
     const idx = rules.findIndex(r => r.id === id);
     const newIdx = idx + dir;
@@ -81,10 +103,11 @@ const TextCleaning = () => {
       await textCleaningApi.reorder(id, newIdx);
       fetchRules();
     } catch (err) {
-      alert('Reorder failed: ' + err.message);
+      alert('Reorder failed: ' + errMsg(err));
     }
   };
 
+  /** Clean one chapter URL with the current rules (API call: test; sets the download link). */
   const handleTest = async () => {
     if (!testUrl.trim()) return;
     setTestLoading(true);
@@ -92,10 +115,15 @@ const TextCleaning = () => {
     setDownloadUrl('');
     try {
       const res = await textCleaningApi.test(testUrl.trim());
-      setDownloadUrl(res.data.download_url);
+      // The backend returns a server-relative path ("/api/..."). Without the
+      // origin the browser would resolve it against the Vite dev server and 404.
+      const url = res.data.download_url || '';
+      setDownloadUrl(url.startsWith('/') ? API_ORIGIN + url : url);
+      setTestIsError(false);
       setTestMsg('Test complete. Download the result below.');
     } catch (err) {
-      setTestMsg('Error: ' + (err.response?.data?.detail || err.message));
+      setTestIsError(true);
+      setTestMsg('Error: ' + errMsg(err));
     } finally {
       setTestLoading(false);
     }
@@ -133,6 +161,7 @@ const TextCleaning = () => {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Enabled</label>
+              {/* <select> values are always strings; Number() converts back to 1/0. */}
               <select value={form.enabled} onChange={e => setForm({...form, enabled: Number(e.target.value)})}
                 className="w-full border rounded px-3 py-2 text-sm">
                 <option value={1}>Yes</option>
@@ -236,9 +265,10 @@ const TextCleaning = () => {
             {testLoading ? 'Processing...' : 'Test'}
           </button>
         </div>
-        {testMsg && <div className={`mt-3 text-sm ${testMsg.startsWith('Error') ? 'text-red-600' : 'text-blue-700'}`}>{testMsg}</div>}
+        {testMsg && <div className={`mt-3 text-sm ${testIsError ? 'text-red-600' : 'text-blue-700'}`}>{testMsg}</div>}
         {downloadUrl && (
-          <a href={downloadUrl} target="_blank"
+          // rel="noopener noreferrer": the new tab gets no window.opener access to this page.
+          <a href={downloadUrl} target="_blank" rel="noopener noreferrer"
             className="mt-2 inline-block bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm font-medium transition">
             Download Result
           </a>

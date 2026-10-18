@@ -1,10 +1,39 @@
+/**
+ * API layer: every backend call the pages make goes through this file.
+ * Pages never import axios directly, so changing the server address or
+ * an endpoint path only needs an edit here.
+ */
 import axios from 'axios';
 
-const BASE_URL = 'http://127.0.0.1:8000';
+/**
+ * Backend origin (scheme + host + port). Exported so pages can turn
+ * server-relative paths (e.g. "/api/text-cleaning/test/x.docx") into
+ * absolute links without repeating the URL string.
+ * TODO: read from an env var (import.meta.env.VITE_API_ORIGIN) if the port ever needs to change per machine.
+ */
+export const API_ORIGIN = 'http://127.0.0.1:8000';
+
+// One shared axios instance; every request path below is relative to /api.
 const api = axios.create({
-  baseURL: `${BASE_URL}/api`,
+  baseURL: `${API_ORIGIN}/api`,
 });
 
+/**
+ * Turn an axios error into a human-readable message.
+ * FastAPI puts its error text in `response.data.detail` (e.g. the 409
+ * "already running" message), so prefer that over axios' generic text.
+ * Optional chaining (`?.`) returns undefined instead of throwing when a
+ * level is missing (network errors have no `response`).
+ * @param {any} err - error thrown by an axios call
+ * @returns {string}
+ */
+export const errMsg = (err) => err?.response?.data?.detail || err?.message || String(err);
+
+/**
+ * Book (downloaded or translated) endpoints. Functions return the axios
+ * promise; callers read `.data`. Functions named `*Url` return a plain
+ * string for <a href>/<img src> instead of making a request.
+ */
 export const bookApi = {
   getAll: (params) => api.get('/books', { params }),
   getOne: (id) => api.get(`/books/${id}`),
@@ -18,16 +47,17 @@ export const bookApi = {
   downloadChapter: (bookId, chapterId) => api.post(`/books/${bookId}/chapters/${chapterId}/download`),
   docxInfo: (id) => api.get(`/books/${id}/docx-info`),
   redownloadDocxInfo: (id) => api.get(`/books/${id}/redownload-docx-info`),
+  // Body is a JSON array of chapter ids; an empty array means "whole book".
   exportCorrected: (id, chapterIds = []) => api.post(`/books/${id}/export-corrected`, chapterIds),
   exportCorrectedDocxInfo: (id) => api.get(`/books/${id}/export-corrected-docx-info`),
-  exportCorrectedDocxUrl: (id) => `${BASE_URL}/api/books/${id}/export-corrected-docx`,
+  exportCorrectedDocxUrl: (id) => `${API_ORIGIN}/api/books/${id}/export-corrected-docx`,
   previewCorrection: (id, chapterId) => api.post(`/books/${id}/preview-correction`, null, { params: { chapter_id: chapterId } }),
   toggleFavorite: (id) => api.post(`/books/${id}/toggle-favorite`),
   toggleSent: (id) => api.post(`/books/${id}/toggle-sent`),
   toggleAutoExport: (id) => api.post(`/books/${id}/toggle-auto-export`),
-  coverUrl: (id) => `${BASE_URL}/api/books/${id}/cover`,
-  docxUrl: (id) => `${BASE_URL}/api/books/${id}/docx`,
-  redownloadDocxUrl: (id) => `${BASE_URL}/api/books/${id}/redownload-docx`,
+  coverUrl: (id) => `${API_ORIGIN}/api/books/${id}/cover`,
+  docxUrl: (id) => `${API_ORIGIN}/api/books/${id}/docx`,
+  redownloadDocxUrl: (id) => `${API_ORIGIN}/api/books/${id}/redownload-docx`,
   checkUpdates: () => api.get('/books/updates/check'),
   refreshInfo: (id) => api.post(`/books/${id}/refresh-info`),
   continueExtract: (id) => api.post(`/books/${id}/continue-extract`),
@@ -36,6 +66,7 @@ export const bookApi = {
   updateBookTags: (id, tags) => api.put(`/books/${id}/tags`, tags),
   allTags: () => api.get('/books/tags'),
   updateInfo: (id, data) => api.put(`/books/${id}`, data),
+  /** Upload a cover image as multipart/form-data (FormData sets the header for us). */
   uploadCover: (id, file) => {
     const form = new FormData();
     form.append('file', file);
@@ -43,22 +74,23 @@ export const bookApi = {
   },
 };
 
+/** Settings endpoints (cookies, DB key/value settings, auto-login). */
 export const settingsApi = {
   getSettings: () => api.get('/settings'),
-  getCookies: () => api.get('/settings/cookies'),
-  updateCookie: (name, value) => api.put('/settings/update-cookie', null, { params: { cookie_name: name, cookie_value: value } }),
   updateCookies: (cookies) => api.put('/settings/cookies', cookies),
   updateSetting: (key, value) => api.put('/settings/update-setting', null, { params: { key, value } }),
   updateTruyenWiki: (config) => api.put('/settings/update-truyenwiki', null, { params: config }),
-  updateLoginConfig: (config) => api.put('/settings/login-config', null, { params: config }),
   autoLogin: (username, password) => api.post('/settings/auto-login', null, { params: { username, password } }),
 };
 
+/** Log file listing / reading. */
 export const logsApi = {
   list: (search) => api.get('/logs', { params: { search } }),
+  // encodeURIComponent keeps file names with spaces/special chars URL-safe.
   read: (filename, lines = 200, offset = 0) => api.get(`/logs/${encodeURIComponent(filename)}`, { params: { lines, offset } }),
 };
 
+/** Global text-cleaning (regex/simple) rules. */
 export const textCleaningApi = {
   list: () => api.get('/text-cleaning'),
   add: (params) => api.post('/text-cleaning', null, { params }),
@@ -68,14 +100,18 @@ export const textCleaningApi = {
   test: (chapterUrl) => api.post('/text-cleaning/test', null, { params: { chapter_url: chapterUrl } }),
 };
 
+/** Request statistics. */
 export const statsApi = {
   meta: () => api.get('/stats/meta'),
   summary: (params) => api.get('/stats/summary', { params }),
   requests: (params) => api.get('/stats/requests', { params }),
-  daily: (params) => api.get('/stats/daily', { params }),
   limitEstimate: (params) => api.get('/stats/limit-estimate', { params }),
 };
 
+/**
+ * Translate tool endpoints. run/retranslate/continue return HTTP 409 when a
+ * job is already active for the book; show the message with errMsg(err).
+ */
 export const translateApi = {
   prepare: () => api.get('/translate/prepare'),
   check: () => api.get('/translate/check'),
@@ -89,7 +125,6 @@ export const translateApi = {
   parse: (filename) => api.post('/translate/parse', null, { params: { filename } }),
   translateText: (text, method = 'api') => api.post('/translate/text', { text, method }),
   createBook: (filename, title, author) => api.post('/translate/books', { filename, title, author }),
-  getBook: (id) => api.get(`/translate/books/${id}`),
   corrections: (id) => api.get(`/translate/books/${id}/corrections`),
   updateCorrections: (id, corrections) => api.put(`/translate/books/${id}/corrections`, { corrections }),
   copyCorrections: (id, sourceBookId) => api.post(`/translate/books/${id}/corrections/copy`, { source_book_id: sourceBookId }),
@@ -98,7 +133,7 @@ export const translateApi = {
   continueRun: (id, method = 'api') => api.post(`/translate/books/${id}/continue`, null, { params: { method } }),
   refreshCookies: () => api.post('/translate/refresh-cookies'),
   retranslateDocxInfo: (id) => api.get(`/translate/books/${id}/retranslate-docx-info`),
-  retranslateDocxUrl: (id) => `${api.defaults.baseURL}/translate/books/${id}/retranslate-docx`,
+  retranslateDocxUrl: (id) => `${API_ORIGIN}/api/translate/books/${id}/retranslate-docx`,
   progress: (id) => api.get(`/translate/books/${id}/progress`),
   cancel: (id) => api.post(`/translate/books/${id}/cancel`),
 };

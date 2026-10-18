@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 python-multipart
-python-dotenv
 selenium
 webdriver-manager
 beautifulsoup4
@@ -9,3 +8,4 @@ python-docx
 colorama
 unidecode
 requests
+curl_cffi

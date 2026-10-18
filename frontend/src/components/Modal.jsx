@@ -1,6 +1,14 @@
 import React, { useEffect } from 'react';
 
+/**
+ * Simple modal dialog. Closes on Escape, backdrop click, or the ✕ button.
+ * @param {{open: boolean, onClose: () => void, title: string, children: React.ReactNode, wide?: boolean}} props
+ *   `wide` switches from max-w-2xl to max-w-4xl.
+ */
 const Modal = ({ open, onClose, title, children, wide = false }) => {
+  // Listen for Escape only while open. The returned function is the effect
+  // cleanup: React calls it before re-running the effect and on unmount, so
+  // the global listener never leaks.
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -15,6 +23,7 @@ const Modal = ({ open, onClose, title, children, wide = false }) => {
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4"
       onClick={onClose}
     >
+      {/* stopPropagation: clicks inside the dialog must not reach the backdrop's onClick. */}
       <div
         className={`bg-white rounded-xl shadow-xl w-full ${wide ? 'max-w-4xl' : 'max-w-2xl'} my-8`}
         onClick={(e) => e.stopPropagation()}

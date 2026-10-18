@@ -11,18 +11,30 @@ import TextCleaning from './pages/TextCleaning';
 import Translate from './pages/Translate';
 import Statistics from './pages/Statistics';
 
+/**
+ * Root component and poor-man's router: the current page lives in state
+ * instead of the URL, so a browser refresh always returns to the Dashboard.
+ * TODO: switch to hash routing so pages/filters are linkable (PLAN.md Phase 3).
+ */
 function App() {
   const [activePage, setActivePage] = useState('dashboard');
   const [selectedBookId, setSelectedBookId] = useState(null);
 
+  /**
+   * Switch page (and optionally which book BookDetails shows).
+   * @param {string} page - page id (see the switch below / Navbar items)
+   * @param {number|null} bookId - book to open on 'bookdetails'
+   */
   const navigateTo = (page, bookId = null) => {
     setSelectedBookId(bookId);
     setActivePage(page);
   };
 
+  /** Return the element for the active page. */
   const renderPage = () => {
     switch(activePage) {
       case 'dashboard':
+        // Dashboard's buttons pass a page id, not a book id.
         return <Dashboard onViewBook={(page) => navigateTo(page)} />;
       case 'booklist':
         return <BookList onViewBook={(id) => navigateTo('bookdetails', id)} />;

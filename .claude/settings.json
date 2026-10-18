@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(npm run build:*)",
+      "Bash(backend/.venv/Scripts/python.exe -m py_compile:*)",
+      "Bash(.venv/Scripts/python.exe -m py_compile:*)"
+    ],
+    "deny": [
+      "Read(**/data/downloads/**)",
+      "Read(**/*.docx)",
+      "Read(**/raw/**)",
+      "Read(**/translate_src/**)",
+      "Read(**/novel_downloader.db*)",
+      "Read(**/package-lock.json)",
+      "Read(**/.venv/**)",
+      "Read(**/node_modules/**)",
+      "Read(**/dist/**)",
+      "Read(**/__pycache__/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [{ "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\"" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{ "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/check.py\"" }]
+      }
+    ]
+  }
+}

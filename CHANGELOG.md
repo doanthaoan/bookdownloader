@@ -12,6 +12,47 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.4.10] — 2026-10-18
+
+### Changed (refactor — no new features)
+
+- **One Selenium factory.** `browser.make_driver(headless, custom_ua, harden)` and `inject_site_cookies()` replace the five copied Chrome setups (downloader, extractor, translator, login, text-cleaning test). The translator keeps Chrome's real UA (`custom_ua=False`) and login stays unhardened. The downloader no longer prints secret cookie values.
+- **One chapter parser.** `downloader.parse_chapter_html()` is shared with the Text Cleaning "Test" endpoint. The test DOCX now matches a real download exactly, title heading included. A page without a chapter title no longer fails the chapter (export falls back to "Chương N").
+- **One translator job.** `translate_book` and `retranslate_book` share `_run_book_job()`, and the final status comes from one function, `_final_status()`.
+- **DOCX file endpoints** (`*-docx`, `*-docx-info`, including the retranslate ones) share `docx_path` / `docx_info` / `docx_response`. URLs and responses are unchanged.
+- **Book Details split.** `BookDetails.jsx` (970 lines) is now 271 lines plus 9 components and a `useBookProgress` polling hook in `pages/book-details/`. The Edit Info form and the Corrections modal keep their own state. Closing them without saving now discards the edits, and correction rows have stable keys.
+- **Shared frontend constants** (`POLL_MS`, web statuses, `isTranslated()`), and a `<SettingRow>` component on the Settings page.
+- **New `backend/tests/test_render.py`**: 7 plain-assert checks covering render rules, the preview diff, blank-line collapsing, both parsers and the status table.
+
+## [1.4.9] — 2026-10-18
+
+### Fixed
+
+- **Re-extracting an existing book no longer deletes its chapters.** `POST /api/books/extract` with a title that already exists used to run `DELETE FROM chapters`, wiping downloaded content. All extraction paths (Extract, Continue Extract, Update & Download) now share `append_new_chapters()`, which only adds chapters whose URL isn't in the DB yet. It also skips URLs listed twice on the site.
+- **Server no longer freezes during Selenium work.** Every endpoint is now a plain `def`, which FastAPI runs in a thread pool. Previously `refresh-info`, `updates/check`, `translate/check`, `translate/text`, `translate/refresh-cookies` and `settings/auto-login` ran on the event loop and blocked every other request, including progress polling.
+- **Editing a book's title works.** `update_book_info` now allows `title`, and passing `None` clears a field (author, summary…) instead of being ignored. The file-name slug (`seo_title_*`) is kept, so existing DOCX and cover files still match.
+- **A download can't get stuck as "running".** The downloader looks books up by id instead of title. A job registers before Chrome opens, and the new `_job()` context manager always closes Chrome and unregisters. Before, an error could leave the book returning 409 until restart. `run()` also no longer leaves a book `in_progress` when nothing is pending, and the downloaded count no longer includes failed chapters.
+- **No double translation runs.** `register_task()` refuses a second job for the same book, and registration happens in the request thread. The API returns **409** (was 400). A guarded runner always unregisters the task and closes Chrome.
+- **One place resolves the data folders.** New `config.book_dir()` and `logs_dir()` resolve `book_path` / `logs_path` relative to `backend/`. The downloader used to resolve them relative to the current working directory. The Logs page now honors the `logs_path` setting.
+- **409 guards**: deleting a book, Continue Extract and Update & Download are refused while a download or translation runs for that book.
+- **Translation API method works.** `curl_cffi` was missing from the venv and `requirements.txt`, so every API call silently fell back to plain `requests`, failed Cloudflare, and dropped to the slow Selenium web method.
+
+- **Frontend**:
+  - Text Cleaning: "Download Result" no longer 404s (the link now uses the API origin).
+  - Settings: values save on blur/Enter instead of on every keystroke, so inputs no longer lag or save stale values.
+  - Book Details: polling stops correctly. It also starts after re-download, single-chapter download, Update & Download, Continue Extract and the translate actions. It no longer overwrites the Edit Info form while you edit.
+  - Translate: no leaked polling interval on a double Start.
+  - Statistics: "today" uses local time (it was UTC, off by one day before 07:00). Refresh also reloads the log table.
+  - Book List: one fetch per search; the author filter is debounced; the status filter includes `ready_for_download`/`paused`; clicking a tag filters in place.
+  - Dashboard: no crash when settings fail to load.
+  - Errors now show the backend's message everywhere (`errMsg()`).
+
+### Changed
+
+- Removed dead code and files: the legacy `services/translate.py` script (it ran on import and held a hardcoded cookie), `DESIGN_OLD.md`, unused DB/cleaner/login/utils helpers, and the unused `save_interval` setting. `python-dotenv` was dropped from requirements. Removed unused frontend API wrappers and the dead re-download-count UI. `familytree.md` moved to `notes/`.
+- The pause between chapters is now the named constant `BETWEEN_CHAPTER_PAUSE` (2–4 s, in addition to `download_delay_min/max`). The pacing is unchanged.
+- All backend and frontend code now has English docstrings/JSDoc and comments, plus `TODO` markers that point to PLAN.md items.
+
 ## [1.4.8] — 2026-10-18
 
 ### Fixed

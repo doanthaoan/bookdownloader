@@ -1,21 +1,33 @@
 import React from 'react';
-import { bookApi, settingsApi } from '../api';
+import { bookApi, errMsg } from '../api';
 import Layout from '../components/Layout';
 
+/**
+ * Extract page: submit a book title + URL so the backend scrapes its
+ * chapter list (the download itself is started later from BookDetails).
+ */
 const Extraction = () => {
   const [form, setForm] = React.useState({ title: '', url: '' });
   const [loading, setLoading] = React.useState(false);
+  // Result banner; `isError` decides the color instead of sniffing the text.
   const [message, setMessage] = React.useState('');
+  const [isError, setIsError] = React.useState(false);
 
+  /**
+   * Submit handler (API call: bookApi.extract; sets message/loading).
+   * @param {React.FormEvent} e
+   */
   const handleSubmit = async (e) => {
-    e.preventDefault();
+    e.preventDefault(); // stop the browser's default full-page form submit
     setLoading(true);
     setMessage('');
     try {
       const res = await bookApi.extract(form.title, form.url);
+      setIsError(false);
       setMessage(res.data.message);
     } catch (err) {
-      setMessage('Error: ' + (err.response?.data?.detail || err.message));
+      setIsError(true);
+      setMessage('Error: ' + errMsg(err));
     } finally {
       setLoading(false);
     }
@@ -27,8 +39,9 @@ const Extraction = () => {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Book Title</label>
-            <input 
-              type="text" 
+            {/* Controlled input: value comes from state, onChange copies the form object with one field replaced. */}
+            <input
+              type="text"
               className="w-full p-2.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
               value={form.title}
               onChange={(e) => setForm({...form, title: e.target.value})}
@@ -38,8 +51,8 @@ const Extraction = () => {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Book URL</label>
-            <input 
-              type="url" 
+            <input
+              type="url"
               className="w-full p-2.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
               value={form.url}
               onChange={(e) => setForm({...form, url: e.target.value})}
@@ -47,15 +60,15 @@ const Extraction = () => {
               required
             />
           </div>
-          <button 
-            type="submit" 
+          <button
+            type="submit"
             disabled={loading}
             className={`w-full py-2.5 px-4 rounded-md text-white font-semibold transition ${loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
           >
             {loading ? 'Extracting...' : 'Start Extraction'}
           </button>
           {message && (
-            <div className={`p-3 rounded text-sm ${message.includes('Error') ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
+            <div className={`p-3 rounded text-sm ${isError ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
               {message}
             </div>
           )}

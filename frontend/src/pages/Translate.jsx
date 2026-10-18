@@ -1,7 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { translateApi, bookApi } from '../api';
+import React, { useState, useEffect, useRef } from 'react';
+import { translateApi, bookApi, errMsg } from '../api';
+import { POLL_MS } from '../constants';
 import Layout from '../components/Layout';
 
+/**
+ * Translate wizard: pick/upload a raw Chinese TXT → parse chapters → create
+ * a translated book → edit corrections → run translation with live progress.
+ * @param {{onViewBook?: (id: number) => void}} props - opens BookDetails for the new book
+ */
 const Translate = ({ onViewBook }) => {
   const [prepare, setPrepare] = useState(null);
   const [files, setFiles] = useState([]);
@@ -20,40 +26,71 @@ const Translate = ({ onViewBook }) => {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [docxInfo, setDocxInfo] = useState(null);
+  // useRef holds the interval id across renders without causing re-renders.
   const pollRef = useRef(null);
 
+  /**
+   * Show the status banner.
+   * @param {string} text
+   * @param {'info'|'success'|'error'} type
+   */
   const showMsg = (text, type = 'info') => { setMsg(text); setMsgType(type); };
 
-  useEffect(() => { init(); return () => clearInterval(pollRef.current); }, []);
+  /** Stop the progress interval (safe to call when none is running). */
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
 
+  // On mount: load initial data. The returned cleanup runs on unmount, so
+  // leaving the page never leaves an interval polling in the background.
+  useEffect(() => {
+    init();
+    return () => stopPolling();
+  }, []);
+
+  /** Load translator status + source file list (API calls: prepare, sourceFiles). */
   const init = async () => {
     setLoading(true);
     try {
+      // Promise.all runs both requests in parallel and waits for both.
       const [p, f] = await Promise.all([translateApi.prepare(), translateApi.sourceFiles()]);
       setPrepare(p.data);
       setFiles(f.data.files || []);
     } catch (err) {
-      showMsg('Failed to load translate page: ' + (err.response?.data?.detail || err.message), 'error');
+      showMsg('Failed to load translate page: ' + errMsg(err), 'error');
     } finally {
       setLoading(false);
     }
   };
 
+  /** Probe whether the translation API is reachable (API call: check; merges into `prepare`). */
   const handleRecheck = async () => {
     try {
       const res = await translateApi.check();
       setPrepare(prev => ({ ...prev, ...res.data }));
       showMsg(res.data.api_available ? 'API is available.' : 'API blocked — using web method.', res.data.api_available ? 'success' : 'info');
     } catch (err) {
-      showMsg('Check failed: ' + (err.response?.data?.detail || err.message), 'error');
+      showMsg('Check failed: ' + errMsg(err), 'error');
     }
   };
 
+  /** Reload the source file list (API call: sourceFiles). */
   const refreshFiles = async () => {
-    const res = await translateApi.sourceFiles();
-    setFiles(res.data.files || []);
+    try {
+      const res = await translateApi.sourceFiles();
+      setFiles(res.data.files || []);
+    } catch (err) {
+      showMsg('Failed to reload files: ' + errMsg(err), 'error');
+    }
   };
 
+  /**
+   * Upload the chosen TXT (API call: upload), then refresh the list.
+   * @param {React.ChangeEvent<HTMLInputElement>} e
+   */
   const handleUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -62,11 +99,16 @@ const Translate = ({ onViewBook }) => {
       showMsg(`Uploaded ${file.name}`, 'success');
       refreshFiles();
     } catch (err) {
-      showMsg('Upload failed: ' + (err.response?.data?.detail || err.message), 'error');
+      showMsg('Upload failed: ' + errMsg(err), 'error');
     }
+    // Reset the file input so choosing the same file again still fires onChange.
     e.target.value = '';
   };
 
+  /**
+   * Delete a source file after confirmation (API call: deleteFile).
+   * @param {string} filename
+   */
   const handleDeleteFile = async (filename) => {
     if (!confirm(`Delete ${filename}?`)) return;
     try {
@@ -74,10 +116,11 @@ const Translate = ({ onViewBook }) => {
       if (selectedFile === filename) { setSelectedFile(''); setParsed(null); }
       refreshFiles();
     } catch (err) {
-      showMsg('Delete failed: ' + err.message, 'error');
+      showMsg('Delete failed: ' + errMsg(err), 'error');
     }
   };
 
+  /** Parse the selected file into title/author/chapters (API call: parse). */
   const handleParse = async () => {
     if (!selectedFile) return;
     setParseLoading(true);
@@ -89,26 +132,28 @@ const Translate = ({ onViewBook }) => {
       setTitle(res.data.raw_title);
       setAuthor(res.data.author || '');
     } catch (err) {
-      showMsg('Parse failed: ' + (err.response?.data?.detail || err.message), 'error');
+      showMsg('Parse failed: ' + errMsg(err), 'error');
     } finally {
       setParseLoading(false);
     }
   };
 
+  /** Machine-translate the title field in place (API call: translateText). */
   const handleTranslateTitle = async () => {
     if (!title.trim()) return;
     setTitleTranslating(true);
     try {
-      // Always try the API first; translate() auto-falls-back to web if blocked.
+      // Always try the API first; the backend falls back to web if blocked.
       const res = await translateApi.translateText(title, 'api');
       setTitle(res.data.translated);
     } catch (err) {
-      showMsg('Title translation failed: ' + (err.response?.data?.detail || err.message), 'error');
+      showMsg('Title translation failed: ' + errMsg(err), 'error');
     } finally {
       setTitleTranslating(false);
     }
   };
 
+  /** Create the book + chapters, then load its corrections and DOCX info (3 API calls). */
   const handleCreateBook = async () => {
     if (!parsed) return;
     try {
@@ -120,30 +165,39 @@ const Translate = ({ onViewBook }) => {
       const di = await bookApi.docxInfo(res.data.book_id);
       setDocxInfo(di.data);
     } catch (err) {
-      showMsg('Create book failed: ' + (err.response?.data?.detail || err.message), 'error');
+      showMsg('Create book failed: ' + errMsg(err), 'error');
     }
   };
 
+  /** Append the "new correction" row to the local list (not saved until Save Corrections). */
   const handleAddCorrection = () => {
     if (!newCorr.find_text.trim()) return;
-    setCorrections([...corrections, { ...newCorr, enabled: true, id: Date.now() }]);
+    // Date.now() gives a temporary unique id for the React `key`.
+    setCorrections(prev => [...prev, { ...newCorr, enabled: true, id: Date.now() }]);
     setNewCorr({ find_text: '', replace_text: '' });
   };
 
+  /** Remove a correction locally by index. */
   const handleRemoveCorrection = (idx) => {
-    setCorrections(corrections.filter((_, i) => i !== idx));
+    setCorrections(prev => prev.filter((_, i) => i !== idx));
   };
 
+  /** Save the whole corrections list for the book (API call: updateCorrections). */
   const handleSaveCorrections = async () => {
     try {
       const clean = corrections.map(c => ({ find_text: c.find_text, replace_text: c.replace_text, enabled: c.enabled !== false }));
       await translateApi.updateCorrections(bookId, clean);
       showMsg('Corrections saved.', 'success');
     } catch (err) {
-      showMsg('Save corrections failed: ' + err.message, 'error');
+      showMsg('Save corrections failed: ' + errMsg(err), 'error');
     }
   };
 
+  /**
+   * Start the translation job and begin polling progress.
+   * Side effects: API calls (check?, run), sets running/msg, starts an interval.
+   * A 409 response (job already running) is shown via errMsg.
+   */
   const startTranslation = async () => {
     try {
       const method = prepare?.api_available === undefined
@@ -152,19 +206,28 @@ const Translate = ({ onViewBook }) => {
       await translateApi.run(bookId, method);
       setRunning(true);
       showMsg(`Translation started (${method === 'api' ? 'API' : 'Web'} method).`, 'info');
-      pollRef.current = setInterval(pollProgress, 2000);
+      // Clear first so a double click can't leave an orphan interval running
+      // (the ref would only remember the last one).
+      stopPolling();
+      pollRef.current = setInterval(pollProgress, POLL_MS);
     } catch (err) {
-      showMsg('Start failed: ' + (err.response?.data?.detail || err.message), 'error');
+      showMsg('Start failed: ' + errMsg(err), 'error');
     }
   };
 
+  /**
+   * One poll tick (API call: progress; when finished also docxInfo + getOne).
+   * Note: setInterval keeps calling the copy of this function from the render
+   * that started it. That is fine here because it only reads `bookId`, which
+   * was already set before translation could start.
+   */
   const pollProgress = async () => {
     if (!bookId) return;
     try {
       const res = await translateApi.progress(bookId);
       setProgress(res.data);
       if (!res.data.active) {
-        clearInterval(pollRef.current);
+        stopPolling();
         setRunning(false);
         const di = await bookApi.docxInfo(bookId);
         setDocxInfo(di.data);
@@ -172,25 +235,28 @@ const Translate = ({ onViewBook }) => {
         setProgress(p => ({ ...p, download_status: book.data.download_status }));
       }
     } catch (err) {
-      clearInterval(pollRef.current);
+      stopPolling();
       setRunning(false);
+      showMsg('Progress check failed: ' + errMsg(err), 'error');
     }
   };
 
+  /** Request cancellation (API call: cancel); polling stops once progress reports inactive. */
   const handleCancel = async () => {
     try {
       await translateApi.cancel(bookId);
       showMsg('Cancellation requested.', 'info');
     } catch (err) {
-      showMsg('Cancel failed: ' + err.message, 'error');
+      showMsg('Cancel failed: ' + errMsg(err), 'error');
     }
   };
 
+  /** Reset the wizard to step 1 and stop polling. */
   const resetAll = () => {
     setSelectedFile(''); setParsed(null); setTitle(''); setAuthor('');
     setBookId(null); setCorrections([]); setProgress(null); setDocxInfo(null);
     setRunning(false);
-    if (pollRef.current) clearInterval(pollRef.current);
+    stopPolling();
   };
 
   const isActive = running || (progress && progress.active);
@@ -199,7 +265,7 @@ const Translate = ({ onViewBook }) => {
 
   return (
     <Layout title="Translate Novels" subtitle="Convert raw Chinese TXT novels to Vietnamese DOCX using dichtienghoa">
-      {/* Step 1: Connection status */}
+      {/* Step 1: Connection status. api_available: undefined = not checked, true = API, false = web fallback. */}
       <div className="bg-white rounded-lg shadow p-5 mb-6 flex items-center gap-4">
         <div className={`w-3 h-3 rounded-full ${prepare?.api_available === undefined ? 'bg-gray-400' : prepare?.api_available ? 'bg-green-500' : 'bg-red-500'}`} />
         <div className="flex-1">
@@ -229,6 +295,7 @@ const Translate = ({ onViewBook }) => {
       <div className="bg-white rounded-lg shadow p-5 mb-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold">1. Source Files</h3>
+          {/* A <label> wrapping a hidden file input makes the whole label clickable as the picker. */}
           <label className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium transition cursor-pointer">
             + Upload TXT
             <input type="file" accept=".txt,.text" className="hidden" onChange={handleUpload} />
@@ -263,7 +330,7 @@ const Translate = ({ onViewBook }) => {
         </div>
       </div>
 
-      {/* Step 3: Book info */}
+      {/* Step 3: Book info (shown after parsing, until the book is created) */}
       {parsed && !bookId && (
         <div className="bg-white rounded-lg shadow p-5 mb-6">
           <h3 className="text-lg font-semibold mb-3">2. Book Info ({parsed.chapters?.length} chapters found)</h3>
@@ -291,6 +358,7 @@ const Translate = ({ onViewBook }) => {
                 <th className="px-4 py-2 w-16">Ch</th><th className="px-4 py-2">Raw Title</th>
               </tr></thead>
               <tbody className="divide-y divide-gray-100">
+                {/* Preview only the first 50 chapters to keep the DOM small. */}
                 {parsed.chapters.slice(0, 50).map(c => (
                   <tr key={c.order}><td className="px-4 py-1.5 text-gray-400">{c.order}</td>
                   <td className="px-4 py-1.5 font-mono text-xs">{c.title}</td></tr>
@@ -373,14 +441,14 @@ const Translate = ({ onViewBook }) => {
                   </span>
                 )}
                 {docxInfo?.exists && (
-                  <a href={bookApi.docxUrl(bookId)} target="_blank"
+                  <a href={bookApi.docxUrl(bookId)} target="_blank" rel="noopener noreferrer"
                     className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm font-medium transition">
                     Open DOCX
                   </a>
                 )}
                 {onViewBook && (
                   <button onClick={() => onViewBook(bookId)} className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded text-sm font-medium transition">
-                    View in Book List
+                    View Book Details
                   </button>
                 )}
               </div>

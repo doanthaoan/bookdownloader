@@ -39,4 +39,10 @@ node_modules/
 
 # AI Agent
 agent/agent.db
-.claude/
+# Claude: track shared config (settings.json, hooks/, skills/), ignore local/scratch
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/skills/
+.claude/settings.local.json
+backend/.claude/

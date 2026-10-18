@@ -1,51 +1,63 @@
 """
-Chapter List Extractor using Selenium
-Automatically extracts chapter lists from book pages to eliminate manual HTML editing
+Book info + chapter list extractor (Selenium).
+
+Given a book page URL on the site, this module:
+  - scrapes the book metadata (author, status, latest chapter, cover, tags,
+    description) — `scrape_book_info`
+  - collects the full chapter list, following the site's pagination
+    (501 chapters per page) — `extract_chapter_list`
+  - saves the book + chapters to the DB — `process_book_chapters`
+
+Chapters are only ever APPENDED (`append_new_chapters`): existing chapter
+rows, and the content already downloaded into them, are never deleted.
 """
 
-# import sys
-import time
-import random
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
-import re
 import os
+import random
+import time
 from urllib.parse import urlparse
 
-# Lấy đường dẫn tuyệt đối của thư mục chứa file script.py hiện tại (thư mục original)
-# current_dir = os.path.dirname(os.path.abspath(__file__))
-
-# # Đẩy thư mục này lên vị trí đầu tiên trong danh sách tìm kiếm của Python
-# if current_dir not in sys.path:
-#     sys.path.insert(0, current_dir)
-    
 import requests
+from bs4 import BeautifulSoup
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+
+from app.config import TRUYENWIKI, book_dir
 from app.database import get_database
-from app.config import TRUYENWIKI, get_cookies, get_user_agent
-from app.services.browser import harden_options, harden_driver, load_page
+from app.services.browser import inject_site_cookies, load_page, make_driver
 
 
-def download_cover_image(book_id: int, seo_title_basic: str, image_url: str, save_dir: str) -> str | None:
-    """Download cover image and return the local filename, or None on failure."""
+def download_cover_image(book_id: int, seo_title_basic: str, image_url: str, save_dir=None) -> str | None:
+    """Download a book cover image to the book folder.
+
+    Args:
+        book_id, seo_title_basic: used to build the file name `{id}_{seo}{ext}`
+            (the same name GET /books/{id}/cover and the DOCX exporter look for).
+        image_url: absolute URL of the image.
+        save_dir: folder to save into; defaults to config.book_dir().
+
+    Returns:
+        The saved file name, or None on failure (errors are logged, not raised,
+        because a missing cover must never break book extraction).
+    """
     if not image_url:
         return None
     db = get_database()
+    save_dir = save_dir or book_dir()
     domain_host = urlparse(TRUYENWIKI['book_domain']).hostname or 'wikicv.org'
+    # Take the extension from the URL path (ignore any "?query"); default to .jpg.
+    # os.path.splitext("a/b.png") -> ("a/b", ".png")
     ext = os.path.splitext(image_url.split('?')[0])[1] or '.jpg'
     filename = f"{book_id}_{seo_title_basic}{ext}"
     filepath = os.path.join(save_dir, filename)
     t0 = time.time()
     try:
+        # A plain HTTP GET is enough for images (no browser / login needed).
         r = requests.get(image_url, timeout=15)
-        r.raise_for_status()
-        with open(filepath, 'wb') as f:
+        r.raise_for_status()  # raises an exception for 4xx/5xx responses
+        with open(filepath, 'wb') as f:  # 'wb' = write binary (image bytes)
             f.write(r.content)
         db.log_request("cover_image", "success", session_type="non_session",
                        domain=domain_host, url=image_url, book_id=book_id,
@@ -61,89 +73,118 @@ def download_cover_image(book_id: int, seo_title_basic: str, image_url: str, sav
 
 
 def normalize_url(url: str) -> str:
-    """Convert an absolute URL to relative by stripping the scheme+domain.
-    Relative URLs are passed through unchanged."""
+    """Convert an absolute URL to a relative one (path + query).
+
+    "https://wikicv.org/truyen/abc?x=1" -> "/truyen/abc?x=1".
+    Relative URLs are returned unchanged. Storing relative URLs keeps the DB
+    valid if the site changes its domain.
+    """
     if not url:
         return url
     parsed = urlparse(url)
-    if parsed.scheme:  # Absolute URL (e.g. https://example.com/path?q=1)
+    if parsed.scheme:  # has "https" → absolute URL
         relative = parsed.path
         if parsed.query:
             relative += '?' + parsed.query
         return relative
-    return url  # Already relative
+    return url
 
 
-# print("Đang dùng db_manager tại:", db_manager.__file__)
+def append_new_chapters(book_id: int, extracted: list) -> int:
+    """Add extracted chapters that are not in the DB yet. Never deletes anything.
+
+    Shared by first extraction, re-extraction of an existing title,
+    Continue Extract and Update & Download.
+
+    Args:
+        book_id: the book to append to.
+        extracted: list of {'title', 'url', 'order'} from extract_chapter_list().
+
+    Returns:
+        Number of chapters added.
+
+    Side effects:
+        - inserts rows into `chapters` with chapter_order continuing after
+          the current maximum,
+        - updates books.total_chapters,
+        - sets download_status='ready_for_download' when the book had no
+          chapters before (first extraction, or an earlier list failure).
+    """
+    db = get_database()
+    existing = db.get_chapters_by_book(book_id)
+    # A set gives O(1) "is this URL already known?" checks. We also add each
+    # new URL to it, so a URL listed twice on the site is inserted only once
+    # (the table has UNIQUE(book_id, chapter_url), a duplicate would crash).
+    known_urls = {c['chapter_url'] for c in existing}
+    # max(..., default=0) avoids an error when the book has no chapters yet.
+    next_order = max((c['chapter_order'] for c in existing), default=0)
+
+    added = 0
+    for ch in extracted:
+        if ch['url'] in known_urls:
+            continue
+        known_urls.add(ch['url'])
+        next_order += 1
+        db.add_chapter(book_id=book_id, chapter_order=next_order,
+                       chapter_title=ch['title'], chapter_url=ch['url'])
+        added += 1
+
+    # download_status=None means "leave unchanged" (see update_book_status).
+    # TODO: a 'completed' book that gets new chapters keeps status 'completed'
+    #       although it now has pending chapters; consider switching it to 'paused'.
+    db.update_book_status(book_id=book_id, total_chapters=len(existing) + added,
+                          download_status=None if existing else 'ready_for_download')
+    print(f"💾 Added {added} new chapter(s) to book ID {book_id} (total: {len(existing) + added})")
+    return added
+
+
 class ChapterListExtractor:
+    """Owns one Chrome session for scraping book pages. Call close() when done."""
+
     def __init__(self):
-        self.driver = None
+        self.driver = None  # created lazily on first use
         self.db = get_database()
         self.domain_host = urlparse(TRUYENWIKI['book_domain']).hostname or 'wikicv.org'
         self.session_type = 'session'  # extraction always uses the logged-in cookies
-        
-    def _setup_selenium(self):
-        """Setup Selenium WebDriver with appropriate options"""
-        chrome_options = Options()
-        # chrome_options.add_argument("--headless")  # Run in background
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument(f"user-agent={get_user_agent()}")
-        harden_options(chrome_options)
-        
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=chrome_options
-        )
-        return harden_driver(driver)
-    
-    def _inject_cookies(self):
-        """Inject cookies for authentication"""
+
+    def _ensure_driver(self):
+        """Start Chrome (browser.make_driver) and log in with the stored cookies,
+        the first time a page is needed. Later calls reuse the same browser."""
         if not self.driver:
-            return
-        
-        load_page(self.driver, TRUYENWIKI['book_domain'])
-        
-        cookie_map = get_cookies()
-        domain = TRUYENWIKI['cookie_domain']
-        for name, value in cookie_map.items():
-            if value:
-                try:
-                    self.driver.add_cookie({
-                        'name': name, 
-                        'value': value, 
-                        'domain': domain
-                    })
-                except Exception as e:
-                    print(f"⚠️ Could not add cookie {name}: {e}")
-    
+            self.driver = make_driver()
+            inject_site_cookies(self.driver)
+
     def scrape_book_info(self, book_url: str) -> dict:
+        """Scrape book metadata from the book's info page.
+
+        Returns:
+            dict with any of: cover_image_url, tags (list[str]),
+            short_description, author, book_web_status, last_chapter_url,
+            last_chapter_title, last_update_date. Keys that are not found on
+            the page are simply missing. Returns {} (or a partial dict) on
+            failure — errors are logged, not raised.
+
+        The labels matched below ('Tác giả:', 'Tình trạng:', ...) are the
+        Vietnamese texts shown on the site, so they must stay in Vietnamese.
         """
-        Scrape book metadata from the book info page.
-        Extracts author, web status, latest chapter, last update date,
-        cover image URL, and short description.
-        """
-        if not self.driver:
-            self.driver = self._setup_selenium()
-            self._inject_cookies()
+        self._ensure_driver()
 
         info = {}
         t0 = time.time()
         try:
             load_page(self.driver, book_url)
-            time.sleep(3)
+            time.sleep(3)  # give the page's JavaScript time to fill in the content
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
 
-            # --- Cover image ---
+            # --- Cover image --- (CSS selector: <img> inside <div class="cover-wrapper">)
             img_tag = soup.select_one('div.cover-wrapper img')
             if img_tag and img_tag.get('src'):
                 src = img_tag['src']
-                if src.startswith('/'):
+                if src.startswith('/'):  # relative URL → make it absolute for requests.get
                     src = TRUYENWIKI['book_domain'] + src
                 info['cover_image_url'] = src
 
-            # --- Tags (Thể loại) ---
+            # --- Tags ("Thể loại:" = genre, the first <p> of div.book-desc) ---
             book_desc = soup.find('div', class_='book-desc')
             if book_desc:
                 first_p = book_desc.find('p')
@@ -155,42 +196,38 @@ class ChapterListExtractor:
             # --- Short description ---
             desc_tag = soup.find('div', class_='book-desc-detail')
             if desc_tag:
+                # get_text('\n') puts a newline between child elements, keeping paragraphs.
                 raw = desc_tag.get_text('\n')
                 info['short_description'] = '\n\n'.join(
                     line.strip() for line in raw.split('\n') if line.strip()
                 )
 
-            # --- Cover-info fields ---
+            # --- Fields inside div.cover-info ---
             cover = soup.find('div', class_='cover-info')
             if not cover:
                 print("⚠️ Could not find cover-info section")
                 return info
 
-            paragraphs = cover.find_all('p')
-            for p in paragraphs:
+            for p in cover.find_all('p'):
                 text = p.get_text(strip=True)
 
-                # Author: Tác giả: ...
-                if text.startswith('Tác giả:'):
+                if text.startswith('Tác giả:'):            # Author
                     a = p.find('a')
                     if a:
                         info['author'] = a.get_text(strip=True)
 
-                # Web status: Tình trạng: ...
-                elif text.startswith('Tình trạng:'):
+                elif text.startswith('Tình trạng:'):       # Status (ongoing/completed...)
                     a = p.find('a')
                     if a:
                         info['book_web_status'] = a.get_text(strip=True)
 
-                # Latest chapter: Mới nhất: ...
-                elif text.startswith('Mới nhất:'):
+                elif text.startswith('Mới nhất:'):         # Latest chapter
                     a = p.find('a')
                     if a:
                         info['last_chapter_url'] = normalize_url(a.get('href', ''))
                         info['last_chapter_title'] = a.get_text(strip=True)
 
-                # Last update: Thời gian đổi mới: ...
-                elif text.startswith('Thời gian đổi mới:'):
+                elif text.startswith('Thời gian đổi mới:'):  # Last update time
                     span = p.find('span')
                     if span:
                         info['last_update_date'] = span.get_text(strip=True)
@@ -208,133 +245,42 @@ class ChapterListExtractor:
         return info
 
     def extract_chapter_list(self, book_url: str) -> list:
-        """
-        Extract chapter list from a book page
-        
+        """Collect every chapter link of a book, following pagination.
+
         Returns:
-            List of dictionaries with chapter info: 
-            [{'title': 'Chapter Title', 'url': '/chapter/123'}, ...]
+            [{'order': 1, 'title': 'Chương 1 ...', 'url': '/truyen/.../chuong-1'}, ...]
+            or [] if nothing was found / an error happened (logged).
+
+        Pagination: the site shows 501 chapters per page; the pagination links
+        carry a `data-start` attribute (0, 501, 1002, ...). We click the link
+        whose data-start is the next page's start until there is none.
         """
-        if not self.driver:
-            self.driver = self._setup_selenium()
-            self._inject_cookies()
-        
+        self._ensure_driver()
+
         t0 = time.time()
         try:
-            # scrape_book_info usually just loaded this page — skip the second request
+            # scrape_book_info usually just loaded this page — skip the second request.
             if self.driver.current_url.rstrip('/') != book_url.rstrip('/'):
                 print(f"🔍 Loading book page: {book_url}")
                 load_page(self.driver, book_url)
             all_chapters = []
-            # Wait for page to load - adjust selector based on actual site structure
             wait = WebDriverWait(self.driver, 20)
-            
-            # Try common selectors for chapter lists - you'll need to adjust these
-            # based on the actual website structure
+
+            # Candidate CSS selectors for chapter links, tried in order. The
+            # first one that matches is used for the page.
+            # TODO: each miss waits up to 20 s; once the working selector is known
+            #       (likely "li.chapter-name a"), put it first or keep only it.
             chapter_selectors = [
-                "ul.chapter-list a",           # Common pattern
-                "div.chapter-list a",          
-                "li.chapter-name a",           # Your current pattern
+                "ul.chapter-list a",
+                "div.chapter-list a",
+                "li.chapter-name a",
                 ".list-chapter a",
                 "#chapter-list a",
-                "a[href*='chapter']",          # Fallback: any link with 'chapter' in URL
+                "a[href*='chapter']",          # fallback: any link with 'chapter' in the URL
             ]
-            
-            # chapter_elements = []
-            # used_selector = None
-            
-            # for selector in chapter_selectors:
-            #     try:
-            #         elements = wait.until(
-            #             EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
-            #         )
-            #         if elements and len(elements) > 0:
-            #             chapter_elements = elements
-            #             used_selector = selector
-            #             print(f"✅ Found chapter list using selector: {selector}")
-            #             break
-            #     except TimeoutException:
-            #         continue
-            
-            # if not chapter_elements:
-            #     # Try to find any list-like structure as fallback
-            #     print("⚠️ Trying fallback methods...")
-            #     fallback_selectors = [
-            #         "div[class*='chapter'] a",
-            #         "li[class*='chapter'] a",
-            #         "a[title*='Chương']",
-            #         "a:contains('Chương')"  # This might not work directly, need JS
-            #     ]
-                
-            #     for selector in fallback_selectors:
-            #         try:
-            #             if "contains" in selector:
-            #                 # Use XPath for text contains
-            #                 elements = self.driver.find_elements(
-            #                     By.XPATH, "//a[contains(text(), 'Chương')]"
-            #                 )
-            #             else:
-            #                 elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                            
-            #             if elements and len(elements) > 0:
-            #                 chapter_elements = elements
-            #                 used_selector = selector
-            #                 print(f"✅ Found chapters with fallback selector: {selector}")
-            #                 break
-            #         except Exception:
-            #             continue
-            
-            # if not chapter_elements:
-            #     raise Exception("Could not find chapter list with any known selector")
-            
-            # # Extract chapter information
-            # chapters = []
-            # seen_urls = set()  # Avoid duplicates
-            
-            # for i, element in enumerate(chapter_elements, 1):
-            #     try:
-            #         # Get chapter URL
-            #         chapter_url = element.get_attribute('href')
-            #         if not chapter_url:
-            #             continue
-                    
-            #         # Skip if we've already seen this URL (avoid duplicates)
-            #         if chapter_url in seen_urls:
-            #             continue
-            #         seen_urls.add(chapter_url)
-                    
-            #         # Get chapter title - try multiple attributes
-            #         chapter_title = (
-            #             element.get_attribute('title') or 
-            #             element.text.strip() or
-            #             element.get_attribute('data-title') or
-            #             f"Chương {i}"  # Fallback
-            #         )
-                    
-            #         # Clean up title
-            #         chapter_title = re.sub(r'\s+', ' ', chapter_title).strip()
-            #         if not chapter_title:
-            #             chapter_title = f"Chương {i}"
-                    
-            #         chapters.append({
-            #             'title': chapter_title,
-            #             'url': chapter_url,
-            #             'order': i
-            #         })
-                    
-            #     except Exception as e:
-            #         print(f"⚠️ Error processing chapter element {i}: {e}")
-            #         continue
-            
-            # print(f"📚 Extracted {len(chapters)} chapters from {book_url}")
-            
-            # Handle pagination if needed
-            # This would require detecting pagination controls and iterating through pages
-            # For now, assuming all chapters are on one page
-            # --- Pagination Logic based on data-start ---
+
             current_start = 0
             while True:
-                found_on_page = False
                 for selector in chapter_selectors:
                     try:
                         elements = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector)))
@@ -343,195 +289,87 @@ class ChapterListExtractor:
                                 url = normalize_url(el.get_attribute('href'))
                                 title = el.text.strip() or "Untitled Chapter"
                                 if url:
-                                    all_chapters.append({'order': len(all_chapters)+1, 'title': title, 'url': url})
-                            found_on_page = True
-                            break
+                                    all_chapters.append({'order': len(all_chapters) + 1, 'title': title, 'url': url})
+                            break  # stop trying selectors for this page
                     except TimeoutException:
-                        continue
-                
+                        continue  # selector not on the page → try the next one
+
+                # --- Go to the next page of the chapter list, if any ---
                 try:
                     pagination_links = self.driver.find_elements(By.CSS_SELECTOR, ".volume-list ul.pagination a")
-                    next_start = current_start + 501 
-                    
-                    target_link = None
-                    for link in pagination_links:
-                        if link.get_attribute('data-start') == str(next_start):
-                            target_link = link
-                            break
-                    
+                    next_start = current_start + 501
+                    # Find the link for the next page (None if this is the last page).
+                    target_link = next((link for link in pagination_links
+                                        if link.get_attribute('data-start') == str(next_start)), None)
                     if target_link:
                         print(f"📄 Loading next page (start={next_start})...")
                         target_link.click()
                         current_start = next_start
+                        # TODO: the list is reloaded by AJAX; waiting for the old
+                        #       elements to go stale would be safer than a fixed sleep.
                         time.sleep(random.randint(2, 4))
                     else:
                         break
                 except NoSuchElementException:
                     break
-                
-                if len(all_chapters) > 10000: 
+
+                if len(all_chapters) > 10000:  # safety stop against an endless loop
                     break
+
             if not all_chapters:
                 raise Exception("No chapters found on the page")
-            # Save to DB => No save to db, use save_chapters_to_db function instead to handle this after extraction
-            # self.db.add_chapters(book_id, all_chapters)
-            # self.db.update_book(book_id, download_status='ready_for_download', total_chargers=len(all_chapters))
-            
+
             print(f"✅ Successfully extracted {len(all_chapters)} chapters.")
             self.db.log_request("chapter_list", "success", session_type=self.session_type,
                                 domain=self.domain_host, url=book_url,
                                 detail=f"{len(all_chapters)} chapters",
                                 duration_ms=int((time.time() - t0) * 1000))
-            # return True, f"Extracted {len(all_chapters)} chapters"
             return all_chapters
-            
+
         except Exception as e:
             self.db.log_request("chapter_list", "failed", session_type=self.session_type,
                                 domain=self.domain_host, url=book_url, error=str(e),
                                 duration_ms=int((time.time() - t0) * 1000))
             print(f"❌ Failed to extract chapter list from {book_url}: {e}")
             return []
-    
-    def save_chapters_to_db(self, book_id: int, chapters: list):
-        """Save extracted chapters to database"""
-        if not chapters:
-            print("⚠️ No chapters to save")
-            return
-        
-        # Clear existing chapters for this book (if updating)
-        # Optional: you might want to keep existing ones and only add new ones
-        conn = self.db._get_connection()
-        conn.execute("DELETE FROM chapters WHERE book_id = ?", (book_id,))
-        conn.commit()
-        
-        # Add new chapters
-        for chapter in chapters:
-            self.db.add_chapter(
-                book_id=book_id,
-                chapter_order=chapter['order'],
-                chapter_title=chapter['title'],
-                chapter_url=chapter['url']
-            )
-        
-        print(f"💾 Saved {len(chapters)} chapters to database for book ID {book_id}")
-    
-    def update_book_html_template(self, book_id: int, chapters: list, 
-                                 folder_path: str = "./data/book_source"):
+
+    def save_book_info(self, book_id: int, seo_title_basic: str, info: dict):
+        """Store scraped metadata on an existing book: fields, tags and cover image.
+
+        Shared by extraction, Refresh Info, Continue Extract and Update & Download.
         """
-        Update the HTML template file with the extracted chapter list
-        This creates/updates the file that wikicv_docx.py reads from
-        """
-        print(f"🔄 Updating HTML template for book ID {book_id} with {len(chapters)} chapters")
-        book = self.db.get_book(book_id)
-        if not book:
-            print(f"❌ Book not found with ID: {book_id}")
-            return
-        
-        seo_filename = f"{book_id}_{book['seo_title_full']}"
-        html_path = os.path.join(folder_path, seo_filename)
-        
-        try:
-            # Read existing file or create new one
-            if os.path.exists(html_path):
-                with open(html_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                # Replace chapter list section or append if not found
-                soup = BeautifulSoup(content, 'html.parser')
-                
-                # Look for existing chapter list container
-                chapter_container = soup.find('div', {'id': 'chapter-list'}) or \
-                                  soup.find('ul', {'class': 'chapter-list'}) or \
-                                  soup.find('div', {'class': 'list-chapter'})
-                
-                if chapter_container:
-                    # Clear existing content
-                    chapter_container.clear()
-                else:
-                    # Create new container
-                    chapter_container = soup.new_tag('div', **{'id': 'chapter-list'})
-                    if soup.body:
-                        soup.body.append(chapter_container)
-                    else:
-                        # If no body, wrap everything
-                        wrapper = soup.new_tag('body')
-                        wrapper.append(soup.contents)
-                        soup.html.append(wrapper)
-                        wrapper.append(chapter_container)
-                
-                # Add chapter list
-                chapter_list_tag = soup.new_tag('ul', **{'class': 'chapter-list'})
-                for chapter in chapters:
-                    li_tag = soup.new_tag('li')
-                    a_tag = soup.new_tag('a', href=chapter['url'])
-                    a_tag.string = chapter['title']
-                    li_tag.append(a_tag)
-                    chapter_list_tag.append(li_tag)
-                
-                chapter_container.append(chapter_list_tag)
-                
-                # Write back to file
-                with open(html_path, 'w', encoding='utf-8') as f:
-                    f.write(str(soup.prettify()))
-                    
-            else:
-                # Create new HTML file with chapter list
-                with open(html_path, 'w', encoding='utf-8') as f:
-                    f.write(f'''<!DOCTYPE html>
-<html lang="vi">
-<head>
-    <title>{book['title']}</title>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body>
-    <h1>{book['title']}</h1>
-    <div id="chapter-list">
-        <ul class="chapter-list">
-''')
-                    for chapter in chapters:
-                        f.write(f'            <li><a href="{chapter["url"]}">{chapter["title"]}</a></li>\n')
-                    f.write('        </ul>\n    </div>\n</body>\n</html>''')
-            
-            print(f"📄 Updated HTML template: {html_path}")
-            
-        except Exception as e:
-            print(f"❌ Failed to update HTML template {html_path}: {e}")
-    
+        if info:
+            self.db.update_book_info(book_id, **info)  # `**info` passes the dict as keyword args
+        if info.get('tags'):
+            self.db.set_book_tags(book_id, info['tags'])
+        if info.get('cover_image_url'):
+            download_cover_image(book_id, seo_title_basic, info['cover_image_url'])
+
     def process_book_chapters(self, book_url: str, book_title: str) -> bool:
-        """
-        Main method to process a book: extract chapters and update everything
-        
+        """Full extraction for the Extraction page: book info + chapter list → DB.
+
+        If a book with this title already exists, its info is refreshed and only
+        NEW chapters are appended (downloaded content is kept).
+
         Returns:
-            True if successful, False otherwise
+            True on success, False if the chapter list could not be extracted
+            (the book row is still saved, so Continue Extract can retry later).
         """
         print(f"\n📖 Processing book: {book_title}")
         print(f"🔗 URL: {book_url}")
-        
+
         try:
-            # Scrape book metadata from cover-info section
+            # 1. Scrape metadata first.
             book_info = self.scrape_book_info(book_url)
 
-            # Get or create book in database
+            # 2. Get or create the book row.
+            # TODO: match on book_url instead of title — two different books can share a title.
             book = self.db.get_book_by_title(book_title)
             if book:
                 book_id = book['id']
                 print(f"📚 Found existing book in DB: {book_title} (ID: {book_id})")
-                # Update book info from scraped data
-                if book_info:
-                    self.db.update_book_info(book_id, **book_info)
-                # Save tags
-                if book_info.get('tags'):
-                    self.db.set_book_tags(book_id, book_info['tags'])
-                # Download cover image
-                if book_info.get('cover_image_url'):
-                    save_dir = self.db.get_setting('book_path') or TRUYENWIKI['book_path']
-                    filename = download_cover_image(
-                        book_id, book['seo_title_basic'],
-                        book_info['cover_image_url'], save_dir
-                    )
+                self.save_book_info(book_id, book['seo_title_basic'], book_info)
             else:
-                # Add new book to database with scraped info
                 book_id = self.db.add_book(
                     title=book_title,
                     book_url=book_url,
@@ -543,25 +381,18 @@ class ChapterListExtractor:
                     cover_image_url=book_info.get('cover_image_url'),
                     short_description=book_info.get('short_description')
                 )
-                # Save tags for new book
+                new_book = self.db.get_book(book_id)
                 if book_info.get('tags'):
                     self.db.set_book_tags(book_id, book_info['tags'])
-                # Download cover image for new book
                 if book_info.get('cover_image_url'):
-                    new_book = self.db.get_book(book_id)
-                    if new_book:
-                        save_dir = self.db.get_setting('book_path') or TRUYENWIKI['book_path']
-                        download_cover_image(
-                            book_id, new_book['seo_title_basic'],
-                            book_info['cover_image_url'], save_dir
-                        )
+                    download_cover_image(book_id, new_book['seo_title_basic'], book_info['cover_image_url'])
                 print(f"📚 Added new book to DB: {book_title} (ID: {book_id})")
                 self.db.log_request("book_added", "success", session_type=self.session_type,
                                     domain=self.domain_host, url=book_url, book_id=book_id,
                                     detail=book_title)
-            
-            # Extract chapters after the book is saved, so a chapter-list failure
-            # keeps the book info; chapters can be fetched later via continue-extract.
+
+            # 3. Extract chapters AFTER the book is saved, so a chapter-list failure
+            #    keeps the book info; chapters can be fetched later via Continue Extract.
             chapters = self.extract_chapter_list(book_url)
             if not chapters:
                 print(f"⚠️ Book saved (ID: {book_id}) but no chapters extracted for {book_title}. Retry later.")
@@ -570,67 +401,35 @@ class ChapterListExtractor:
                                     error="Book info saved, chapter list extraction failed")
                 return False
 
-            # Save chapters to database
-            self.save_chapters_to_db(book_id, chapters)
-            
-            # Update HTML template file
-            # self.update_book_html_template(book_id, chapters)
-            
-            # Update book status to indicate chapters are ready
-            self.db.update_book_status(
-                book_id=book_id,
-                download_status='ready_for_download',
-                total_chapters=len(chapters)
-            )
-            
+            # 4. Append only chapters we don't have yet (never deletes existing ones).
+            added = append_new_chapters(book_id, chapters)
+
             self.db.log_request("book_extract", "success", session_type=self.session_type,
                                 domain=self.domain_host, url=book_url, book_id=book_id,
-                                detail=f"{len(chapters)} chapters")
-            
-            print(f"✅ Successfully processed {book_title}")
-            print(f"   📊 Chapters found: {len(chapters)}")
-            print(f"   💾 Saved to database and HTML template updated")
-            
+                                detail=f"{len(chapters)} chapters, {added} new")
+            print(f"✅ Successfully processed {book_title}: {len(chapters)} found, {added} new")
             return True
-            
+
         except Exception as e:
             self.db.log_request("book_extract", "failed", session_type=self.session_type,
                                 domain=self.domain_host, url=book_url, error=str(e))
             print(f"❌ Failed to process book {book_title}: {e}")
             return False
-    
+
     def close(self):
-        """Close the WebDriver"""
+        """Quit Chrome (safe to call more than once)."""
         if self.driver:
             self.driver.quit()
             self.driver = None
 
+
 def extract_chapters_for_book(book_url: str, book_title: str) -> bool:
-    """
-    Convenience function to extract chapters for a single book
-    
-    Args:
-        book_url: URL of the book's main page
-        book_title: Title of the book
-        
-    Returns:
-        True if successful
+    """Run a full extraction with its own Chrome session (always closed afterwards).
+
+    `try/finally` guarantees close() runs even when process_book_chapters raises.
     """
     extractor = ChapterListExtractor()
     try:
         return extractor.process_book_chapters(book_url, book_title)
     finally:
         extractor.close()
-
-# Example usage:
-if __name__ == "__main__":
-    # Test with a sample book URL and title
-    # Replace with actual values when testing
-    test_url = input("Enter the book URL to extract chapters from: ")
-    test_title = input("Enter the book title: ")
-    
-    success = extract_chapters_for_book(test_url, test_title)
-    if success:
-        print("✅ Chapter extraction completed successfully")
-    else:
-        print("❌ Chapter extraction failed")

@@ -1,5 +1,25 @@
+"""Translate API: turn a raw (e.g. Chinese) TXT file into a "translated book".
+
+Flow used by the Translate page:
+  1. upload / list raw TXT files in the source folder (/upload, /source-files)
+  2. /parse a file -> preview book info + chapter titles
+  3. POST /books -> create the book + chapters in the DB (raw text, untranslated)
+  4. POST /books/{id}/run -> translate pending chapters in a background thread
+  5. poll /books/{id}/progress; cancel with /books/{id}/cancel
+
+Mounted in main.py under the prefix ``/api/translate``, so ``@router.get("/prepare")``
+here is really ``GET /api/translate/prepare``.
+
+All endpoints are plain ``def`` on purpose: FastAPI runs them in a thread pool,
+so blocking work (sqlite, HTTP calls to the translation API, Selenium) does not
+freeze the asyncio event loop that serves every other request.
+
+Storage invariant (see app/services/docx_exporter.py): the raw source text lives
+in ``chapters.chapter_content``; the raw translation goes to
+``chapters.translated_content`` as "<viet_title>\\n<viet_body>". Global cleaning
+rules and per-book corrections are applied only when a DOCX is rendered.
+"""
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import os
@@ -17,17 +37,24 @@ from app.services.translator import (
     cancel_translation,
     get_translation_progress,
     Translator,
+    TranslationRunningError,
 )
-from app.config import TRUYENWIKI
+from app.config import BACKEND_DIR
+from app.api.books import docx_info, docx_response, get_book_or_404
 
 router = APIRouter()
 db = get_database()
 
 
 def _source_dir() -> Path:
-    base_dir = Path(__file__).parent.parent.parent
+    """Folder holding the raw TXT files (``translate_source_path`` setting).
+
+    Relative paths are resolved against backend/. The folder is created if it
+    does not exist yet (``parents=True`` = like ``mkdir -p``; ``exist_ok=True``
+    = no error if it is already there).
+    """
     src = db.get_setting("translate_source_path") or "./data/translate_src"
-    path = base_dir / src
+    path = BACKEND_DIR / src  # an absolute `src` wins over BACKEND_DIR in a Path join
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -35,14 +62,24 @@ def _source_dir() -> Path:
 # --- Preparation / files ---
 
 @router.get("/prepare")
-async def prepare():
+def prepare():
     """Return translation settings and the effective method WITHOUT probing the API.
     Cheap call used on page load. The actual availability check happens on demand
-    via GET /check (or implicitly when a run starts)."""
+    via GET /check (or implicitly when a run starts).
+
+    GET /api/translate/prepare
+
+    Response: ``{"method": "api"|"web", "source_path": str, "settings": {...}}``
+    where ``settings`` holds every translate_* setting plus ``has_cookies``.
+    Read-only (apart from _source_dir() creating the folder).
+    """
+    # The cookie setting is normally a JSON list/dict; if it isn't valid JSON we
+    # fall back to "any non-blank text counts as cookies".
     has_cookies = False
     raw_cookies = db.get_setting("translate_cookies") or ""
     if raw_cookies.strip():
         try:
+            # TODO: move this import to the top of the file (stdlib, always available).
             import json
             has_cookies = bool(json.loads(raw_cookies))
         except Exception:
@@ -71,10 +108,15 @@ async def prepare():
 
 
 @router.get("/check")
-async def check():
-    """Probe the translation API availability (slow — only called on demand)."""
+def check():
+    """GET /api/translate/check -- probe the translation API availability (slow — only called on demand).
+
+    Response: ``{"api_available": bool, "method": "api"|"web", "source_path": str}``.
+    Side effect: makes a real network request to the translation API.
+    """
     t = Translator()
     api_ok = t.api_available()
+    # TODO: wrap in try/finally so t.close() also runs if api_available() raises.
     t.close()
     return {
         "api_available": api_ok,
@@ -84,10 +126,15 @@ async def check():
 
 
 @router.get("/source-files")
-async def list_source_files():
-    """List raw TXT files available in the source folder."""
+def list_source_files():
+    """GET /api/translate/source-files -- list raw TXT files available in the source folder.
+
+    Response: ``{"files": [{"filename", "size", "modified"}, ...], "source_path": str}``
+    (sorted by file name; only .txt / .text files).
+    """
     src = _source_dir()
     files = []
+    # iterdir() yields Path objects for every entry in the folder.
     for f in sorted(src.iterdir()):
         if f.is_file() and f.suffix.lower() in (".txt", ".text"):
             files.append({
@@ -99,22 +146,43 @@ async def list_source_files():
 
 
 @router.post("/upload")
-async def upload_source_file(file: UploadFile = File(...)):
-    """Upload a raw TXT file into the source folder."""
+def upload_source_file(file: UploadFile = File(...)):
+    """POST /api/translate/upload -- upload a raw TXT file into the source folder.
+
+    Body: multipart/form-data with a ``file`` field. ``UploadFile = File(...)``
+    tells FastAPI to read it from the form (``...`` = required). ``file.file``
+    is a file-like object, so it can be streamed to disk without loading it
+    all into memory.
+
+    Response: ``{"filename": saved_name, "size": bytes}``.
+    Errors: 400 if the name does not end in .txt / .text.
+    Side effect: writes (or overwrites!) a file in the source folder.
+    """
     filename = file.filename or "upload.txt"
     if not filename.lower().endswith((".txt", ".text")):
         raise HTTPException(status_code=400, detail="Only .txt files are supported")
     # Sanitize filename
+    # basename() drops any directory part a client might send ("../../x.txt" ->
+    # "x.txt"), so the upload cannot be written outside the source folder.
     safe_name = os.path.basename(filename)
     dest = _source_dir() / safe_name
+    # copyfileobj streams the upload to disk in chunks.
     with dest.open("wb") as out:
         shutil.copyfileobj(file.file, out)
     return {"filename": safe_name, "size": dest.stat().st_size}
 
 
 @router.delete("/source-files/{filename}")
-async def delete_source_file(filename: str):
-    """Delete a raw TXT file from the source folder."""
+def delete_source_file(filename: str):
+    """DELETE /api/translate/source-files/{filename} -- delete a raw TXT file from the source folder.
+
+    Errors: 404 if the file does not exist.
+    Side effect: deletes the file from disk (books already created from it are untouched).
+    """
+    # TODO: no traversal guard here. "/" can't appear in the path param, but on
+    # Windows a URL-encoded "\" ("..%5C..%5Cx") can. Apply os.path.basename()
+    # as /upload does (same for /parse and POST /books, which take the name
+    # from a query param / JSON body).
     dest = _source_dir() / filename
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -123,8 +191,14 @@ async def delete_source_file(filename: str):
 
 
 @router.post("/parse")
-async def parse_file(filename: str):
-    """Parse a raw TXT file and return book info + chapter titles (raw, untranslated)."""
+def parse_file(filename: str):
+    """POST /api/translate/parse?filename=.. -- parse a raw TXT file and return
+    book info + chapter titles (raw, untranslated).
+
+    Response: the dict from ``parse_raw_file`` (title/author/summary/chapters)
+    plus ``"filename"``. Errors: 404 if the file is missing.
+    Read-only: nothing is saved yet.
+    """
     dest = _source_dir() / filename
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -136,18 +210,31 @@ async def parse_file(filename: str):
 # --- Text helpers ---
 
 class TranslateTextRequest(BaseModel):
+    """JSON body for POST /text.
+
+    A pydantic ``BaseModel`` declares the expected JSON shape; FastAPI parses
+    and validates the body into an instance (422 on wrong types/missing ``text``).
+    """
     text: str
+    # "api" (HTTP translation API) or "web" (browser automation).
     method: Optional[str] = "api"
 
 
 @router.post("/text")
-async def translate_single_text(req: TranslateTextRequest):
-    """Translate an arbitrary block of text (e.g. a book title)."""
+def translate_single_text(req: TranslateTextRequest):
+    """POST /api/translate/text -- translate an arbitrary block of text (e.g. a book title).
+
+    Body: ``{"text": "...", "method": "api"|"web"}``.
+    Response: ``{"translated": "..."}``.
+    Errors: 400 for empty text; 502 Bad Gateway when the upstream translator
+    fails (502 = "a server we depend on failed", not our own bug).
+    """
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Empty text")
     try:
         translated = translate_text(req.text, method=req.method)
     except RuntimeError as e:
+        # Expected failure raised by the translator with a user-readable message.
         raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
         print(f"{Fore.RED}Unexpected translation error: {e}")
@@ -158,19 +245,27 @@ async def translate_single_text(req: TranslateTextRequest):
 # --- Book creation ---
 
 class CreateBookRequest(BaseModel):
+    """JSON body for POST /books: which source file, and the (translated) title/author."""
     filename: str
     title: str
     author: Optional[str] = ""
 
 
 @router.post("/books")
-async def create_translated_book(req: CreateBookRequest, background_tasks: BackgroundTasks):
+def create_translated_book(req: CreateBookRequest, background_tasks: BackgroundTasks):
     """Create a book + chapters from a parsed raw file. Chapters keep raw content
     in chapters.chapter_content; translation happens later in the run step.
 
     If the file has intro/summary text before the first chapter, we TRY to
     translate it for the book summary. If translation fails, the book is STILL
     saved (without a summary) — summary is best-effort only.
+
+    POST /api/translate/books
+    Body: ``{"filename": str, "title": str, "author": str}``.
+    Response: ``{"book_id": int, "message": str}``.
+    Errors: 404 file missing, 400 no chapters found / title already exists.
+    Side effects: inserts the book (is_translated=1, status "Parsed") and one
+    chapter row per parsed chapter; schedules a background summary translation.
     """
     dest = _source_dir() / req.filename
     if not dest.exists():
@@ -184,6 +279,8 @@ async def create_translated_book(req: CreateBookRequest, background_tasks: Backg
     if existing:
         raise HTTPException(status_code=400, detail="A book with this title already exists")
 
+    # `a or b or None`: first truthy value wins -- the user's author, else the one
+    # parsed from the file, else NULL in the DB.
     book_id = db.add_book(
         title=req.title,
         author=req.author or parsed["author"] or None,
@@ -192,6 +289,10 @@ async def create_translated_book(req: CreateBookRequest, background_tasks: Backg
     )
     db.update_book_info(book_id, source_file=req.filename, is_translated=1, total_chapters=len(parsed["chapters"]))
 
+    # Translated chapters have no web URL, but chapter_url is used as an identity
+    # key, so we invent a unique fake one: "translate://<book_id>/<order>".
+    # TODO: one INSERT (and commit) per chapter; a single executemany/transaction
+    # would be much faster for books with thousands of chapters.
     for ch in parsed["chapters"]:
         placeholder_url = f"translate://{book_id}/{ch['order']}"
         db.add_chapter_with_content(
@@ -201,6 +302,9 @@ async def create_translated_book(req: CreateBookRequest, background_tasks: Backg
     # Best-effort: translate the intro/summary text. Never block book creation.
     summary = parsed.get("summary") or ""
     if summary:
+        # Nested function (closure): it "captures" summary and book_id from this
+        # scope. BackgroundTasks runs it AFTER the HTTP response has been sent,
+        # so the client gets its book_id immediately.
         def translate_summary():
             try:
                 t = Translator()
@@ -208,6 +312,8 @@ async def create_translated_book(req: CreateBookRequest, background_tasks: Backg
                 if translated and translated.strip():
                     db.update_book_info(book_id, short_description=translated.strip())
                     print(f"📝 Summary translated for book {book_id}")
+                # TODO: move t.close() into a finally block; on an exception the
+                # Translator (and any browser it opened) is never closed.
                 t.close()
             except Exception as e:
                 print(f"{Fore.YELLOW}Summary translation failed (book saved without summary): {e}")
@@ -217,8 +323,14 @@ async def create_translated_book(req: CreateBookRequest, background_tasks: Backg
 
 
 @router.get("/books/{book_id}")
-async def get_translated_book(book_id: int):
-    """Get a translated book plus its chapter list (raw titles + translation status)."""
+def get_translated_book(book_id: int):
+    """GET /api/translate/books/{book_id} -- a translated book plus its chapter
+    list (raw titles + translation status).
+
+    Response: ``{"book": {...}, "chapters": [{"id", "order", "title",
+    "has_content", "status"}, ...]}`` -- a slim chapter list (no content) to keep
+    the payload small. Errors: 404 if the book does not exist.
+    """
     book = db.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
@@ -239,35 +351,66 @@ async def get_translated_book(book_id: int):
 
 
 # --- Corrections ---
+# Per-book find/replace rules (table book_corrections). They are applied only
+# when rendering (DOCX export / preview), never written into chapter content.
 
 @router.get("/books/{book_id}/corrections")
-async def get_corrections(book_id: int):
+def get_corrections(book_id: int):
+    """GET /api/translate/books/{book_id}/corrections -- list this book's corrections.
+
+    Response: list of ``{"id", "find_text", "replace_text", "enabled", ...}``.
+    Works for downloaded books too (the route just lives in this router).
+    No 404: an unknown book simply returns ``[]``.
+    """
     return db.get_book_corrections(book_id)
 
 
 class CorrectionsRequest(BaseModel):
+    """JSON body for PUT corrections: ``{"corrections": [{find_text, replace_text, enabled}, ...]}``."""
+    # TODO: List[Dict] accepts any dict shape; a small Correction(BaseModel) would
+    # validate the field names/types.
     corrections: List[Dict]
 
 
 @router.put("/books/{book_id}/corrections")
-async def set_corrections(book_id: int, req: CorrectionsRequest):
+def set_corrections(book_id: int, req: CorrectionsRequest):
+    """PUT /api/translate/books/{book_id}/corrections -- REPLACE all corrections of a book.
+
+    Body: see CorrectionsRequest. The list sent becomes the full new set
+    (rows not in it are deleted). No 404 check on book_id.
+    Side effect: rewrites the book's rows in book_corrections.
+    """
     db.set_book_corrections(book_id, req.corrections)
     return {"message": "Corrections saved."}
 
 
 class CopyCorrectionsRequest(BaseModel):
+    """JSON body for the copy endpoint: ``{"source_book_id": int}``."""
     source_book_id: int
 
 
 @router.post("/books/{book_id}/corrections/copy")
-async def copy_corrections(book_id: int, req: CopyCorrectionsRequest):
-    """Replace this book's corrections with ALL corrections of another book."""
+def copy_corrections(book_id: int, req: CopyCorrectionsRequest):
+    """Replace this book's corrections with ALL corrections of another book.
+
+    POST /api/translate/books/{book_id}/corrections/copy
+    Body: ``{"source_book_id": int}``.
+
+    Response: ``{"message", "copied": count, "source_title",
+    "corrections": [the target book's new list]}`` -- the new list is returned so
+    the open Corrections modal can update its state directly (otherwise the
+    BookDetails progress polling would clobber it).
+
+    Errors: 400 if source == target, 404 if the source book is missing.
+    Side effect: OVERWRITES the target book's corrections.
+    """
     if req.source_book_id == book_id:
         raise HTTPException(status_code=400, detail="Source and target are the same book.")
     source = db.get_book(req.source_book_id)
     if not source:
         raise HTTPException(status_code=404, detail=f"Source book {req.source_book_id} not found.")
     corrections = db.get_book_corrections(req.source_book_id)
+    # Keep only the content fields: id/book_id of the source rows must not be copied.
     db.set_book_corrections(book_id, [
         {"find_text": c["find_text"], "replace_text": c["replace_text"], "enabled": bool(c["enabled"])}
         for c in corrections
@@ -281,12 +424,82 @@ async def copy_corrections(book_id: int, req: CopyCorrectionsRequest):
 
 
 # --- Run / progress ---
+# Note: unlike the downloader endpoints in books.py, these do NOT use FastAPI's
+# BackgroundTasks. translate_book(..., run_async=True) starts its own thread and
+# returns immediately, so the job is registered before this response is sent.
 
 @router.post("/books/{book_id}/run")
-async def run_translation(book_id: int, method: str = "api", max_chapters: int = None):
+def run_translation(book_id: int, method: str = "api", max_chapters: int = None):
     """Start translating pending chapters of a book in the background.
     Mirrors the downloader: only 'pending' chapters are processed; passing
     max_chapters limits the session (book status becomes 'paused' if more remain).
+
+    POST /api/translate/books/{book_id}/run?method=api|web&max_chapters=N
+    Response: ``{"message": str}``.
+    Errors: 404 no book, 400 not a translated book, 409 a translation is
+    already running for this book.
+    Side effects: background thread writes translated_content + statuses to the
+    DB and builds the DOCX; may open Chrome for the "web" method or to refresh
+    Cloudflare cookies.
+    """
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if not book.get("is_translated"):
+        raise HTTPException(status_code=400, detail="Not a translated book")
+    # Fast-path check for a friendly 409 ...
+    existing = get_translation_progress(book_id)
+    if existing and existing.get("active"):
+        raise HTTPException(status_code=409, detail="Translation already running for this book")
+    # ... but two clicks can both pass the check above; translate_book does the
+    # real atomic registration and raises TranslationRunningError for the loser.
+    try:
+        translate_book(book_id, method=method, run_async=True, max_chapters=max_chapters)
+    except TranslationRunningError as e:  # lost the race against a double click
+        raise HTTPException(status_code=409, detail=str(e))
+    msg = f"Translation started for {book['title']}."
+    if max_chapters:
+        msg += f" Limited to {max_chapters} chapters."
+    return {"message": msg}
+
+
+@router.post("/books/{book_id}/retranslate")
+def run_retranslation(book_id: int, method: str = "api"):
+    """Re-translate failed chapters into a separate _retranslate.docx.
+
+    POST /api/translate/books/{book_id}/retranslate?method=api|web
+    Response: ``{"message": str}``. Errors: 404 / 400 / 409 as for /run.
+    Side effects: background thread updates failed chapters in the DB and
+    writes {book_id}_{seo}_retranslate.docx.
+    """
+    # TODO: the 404/400/409 preamble is copy-pasted in /run, /retranslate and
+    # /continue; a small _ensure_translatable(book_id) helper would remove it.
+    book = db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if not book.get("is_translated"):
+        raise HTTPException(status_code=400, detail="Not a translated book")
+    existing = get_translation_progress(book_id)
+    if existing and existing.get("active"):
+        raise HTTPException(status_code=409, detail="Translation already running for this book")
+    try:
+        retranslate_book(book_id, method=method, run_async=True)
+    except TranslationRunningError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"message": f"Re-translation started for {book['title']}. Output goes to _retranslate.docx."}
+
+
+@router.post("/books/{book_id}/continue")
+def run_continue(book_id: int, method: str = "api"):
+    """Resume failed chapters into the MAIN DOCX. Use after updating a stale
+    cf_clearance cookie: failed chapters are reset to pending and re-translated,
+    appending to {book_id}_{seo}.docx (not a separate retranslate file).
+
+    POST /api/translate/books/{book_id}/continue?method=api|web
+    Response: whatever ``continue_book`` returns (message + counts).
+    Errors: 404 / 400 / 409 as for /run.
+    Side effects: resets failed chapters to pending in the DB, starts a
+    background translation thread.
     """
     book = db.get_book(book_id)
     if not book:
@@ -295,95 +508,65 @@ async def run_translation(book_id: int, method: str = "api", max_chapters: int =
         raise HTTPException(status_code=400, detail="Not a translated book")
     existing = get_translation_progress(book_id)
     if existing and existing.get("active"):
-        raise HTTPException(status_code=400, detail="Translation already running for this book")
-    translate_book(book_id, method=method, run_async=True, max_chapters=max_chapters)
-    msg = f"Translation started for {book['title']}."
-    if max_chapters:
-        msg += f" Limited to {max_chapters} chapters."
-    return {"message": msg}
-
-
-@router.post("/books/{book_id}/retranslate")
-async def run_retranslation(book_id: int, method: str = "api"):
-    """Re-translate failed chapters into a separate _retranslate.docx."""
-    book = db.get_book(book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found")
-    if not book.get("is_translated"):
-        raise HTTPException(status_code=400, detail="Not a translated book")
-    existing = get_translation_progress(book_id)
-    if existing and existing.get("active"):
-        raise HTTPException(status_code=400, detail="Translation already running for this book")
-    retranslate_book(book_id, method=method, run_async=True)
-    return {"message": f"Re-translation started for {book['title']}. Output goes to _retranslate.docx."}
-
-
-@router.post("/books/{book_id}/continue")
-async def run_continue(book_id: int, method: str = "api"):
-    """Resume failed chapters into the MAIN DOCX. Use after updating a stale
-    cf_clearance cookie: failed chapters are reset to pending and re-translated,
-    appending to {book_id}_{seo}.docx (not a separate retranslate file)."""
-    book = db.get_book(book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found")
-    if not book.get("is_translated"):
-        raise HTTPException(status_code=400, detail="Not a translated book")
-    existing = get_translation_progress(book_id)
-    if existing and existing.get("active"):
-        raise HTTPException(status_code=400, detail="Translation already running for this book")
-    return continue_book(book_id, method=method, run_async=True)
+        raise HTTPException(status_code=409, detail="Translation already running for this book")
+    try:
+        return continue_book(book_id, method=method, run_async=True)
+    except TranslationRunningError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.post("/refresh-cookies")
-async def refresh_cookies():
+def refresh_cookies():
     """Open a real Chrome so Cloudflare issues a fresh cf_clearance, then save it.
-    Run this manually when the automatic refresh limit was reached."""
+    Run this manually when the automatic refresh limit was reached.
+
+    POST /api/translate/refresh-cookies
+    Response: result dict from ``refresh_cookies_manually`` (success + message).
+    Side effects: OPENS a visible Chrome and blocks this request until done;
+    saves the new cookies to the ``translate_cookies`` setting.
+    """
     return refresh_cookies_manually()
 
 
 @router.get("/books/{book_id}/retranslate-docx-info")
-async def retranslate_docx_info(book_id: int):
-    """Check if _retranslate.docx exists for a translated book."""
-    book = db.get_book(book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found")
-    file_name = f"{book_id}_{book['seo_title_basic']}_retranslate.docx"
-    base_dir = Path(__file__).parent.parent.parent
-    file_path = base_dir / (db.get_setting("book_path") or TRUYENWIKI["book_path"]) / file_name
-    return {
-        "exists": file_path.exists(),
-        "file_name": file_name,
-        "file_path": str(file_path.resolve()) if file_path.exists() else None,
-        "size": file_path.stat().st_size if file_path.exists() else 0,
-    }
+def retranslate_docx_info(book_id: int):
+    """GET /api/translate/books/{book_id}/retranslate-docx-info -- check if
+    _retranslate.docx exists for a translated book.
+
+    Response: ``{"exists": bool, "file_name": str, "file_path": abs path|None, "size": bytes}``.
+    Errors: 404 if the book does not exist (a missing FILE is ``exists: false``, not 404).
+    """
+    return docx_info(get_book_or_404(book_id), "_retranslate")
 
 
 @router.get("/books/{book_id}/retranslate-docx")
-async def retranslate_docx(book_id: int):
-    """Download the _retranslate.docx file."""
-    book = db.get_book(book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found")
-    file_name = f"{book_id}_{book['seo_title_basic']}_retranslate.docx"
-    base_dir = Path(__file__).parent.parent.parent
-    file_path = base_dir / (db.get_setting("book_path") or TRUYENWIKI["book_path"]) / file_name
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Retranslate DOCX file not found.")
-    return FileResponse(
-        path=str(file_path),
-        filename=file_name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+def retranslate_docx(book_id: int):
+    """GET /api/translate/books/{book_id}/retranslate-docx -- download the _retranslate.docx file.
+
+    Response: the file (``FileResponse`` streams it and sets a download filename).
+    Errors: 404 if the book or the file does not exist.
+    """
+    return docx_response(get_book_or_404(book_id), "_retranslate",
+                         "Retranslate DOCX file not found.")
 
 
 @router.get("/books/{book_id}/progress")
-async def translation_progress(book_id: int):
-    """Get real-time translation progress for a book."""
+def translation_progress(book_id: int):
+    """GET /api/translate/books/{book_id}/progress -- real-time translation progress (polled by the UI).
+
+    Response:
+      * while a job is tracked: the live progress dict from the translator
+        (``active``, counts, current chapter, ...);
+      * otherwise: a fallback built from the DB row:
+        ``{"active": False, "download_status", "downloaded_chapters", "total_chapters"}``.
+    Errors: 404 only when no job is tracked AND the book does not exist.
+    """
     progress = get_translation_progress(book_id)
     if not progress:
         book = db.get_book(book_id)
         if not book:
             raise HTTPException(status_code=404, detail="Book not found")
+        # `x or 0` turns a NULL column into 0 for the UI.
         return {
             "active": False,
             "download_status": book["download_status"],
@@ -394,7 +577,13 @@ async def translation_progress(book_id: int):
 
 
 @router.post("/books/{book_id}/cancel")
-async def cancel_translation_task(book_id: int):
+def cancel_translation_task(book_id: int):
+    """POST /api/translate/books/{book_id}/cancel -- ask a running translation to stop.
+
+    Cancellation is cooperative: a flag is set and the worker stops after the
+    current chapter, so the response returns before the job has actually ended.
+    Errors: 404 if no translation is active for this book.
+    """
     cancelled = cancel_translation(book_id)
     if cancelled:
         return {"message": "Cancellation requested for translation."}

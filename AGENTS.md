@@ -4,13 +4,14 @@ Two independent apps in one repo: `backend/` (FastAPI + Selenium + SQLite) and `
 
 ## Commands
 
-There are no tests. Verification = compile-check backend + build frontend:
+Verification = compile-check backend + run the self-checks + build frontend:
 
 ```powershell
 # backend (run from backend/) — always use the project venv (backend/.venv, Python 3.13).
 # System `python` on PATH is C:\Python315 and has NO project deps.
 .venv\Scripts\Activate.ps1           # once per terminal; or call .venv\Scripts\python.exe directly
 python -m py_compile app/api/<file>.py app/services/<file>.py
+python tests/test_render.py           # plain-assert checks of the pure text logic (render rules, parsers, status table)
 uvicorn main:app --reload            # dev server on 127.0.0.1:8000
 
 # frontend (run from frontend/)
@@ -46,6 +47,13 @@ The DB is the source of truth; DOCX files are always derived at render time. Nev
 - `BookDetails.jsx` polls progress; writes made while its Corrections modal is open must update local state from the response or polling will clobber them.
 
 ## Conventions
+
+- **Code comments (owner is learning Python — mandatory for all new/edited code):**
+  - All comments and docstrings in **English** (translate any Vietnamese ones you touch; UI/data strings like `'Tác giả:'`, `'Còn tiếp'` stay as-is).
+  - Every function/class/endpoint gets a docstring: what it does, args, return value, side effects (DB writes, files, browser).
+  - Comment key code blocks and non-obvious lines with the *why* and any Python idiom used (e.g. walrus `:=`, `dict.get`, generator expressions, `try/finally`).
+  - Add a longer explanation block when the logic is tricky (threading, Selenium waits, regex, render pipeline).
+  - Add `# TODO:` (with a short reason, and a PLAN.md item if one exists) wherever code can be improved or will need changes for planned features/fixes.
 
 - Add a `CHANGELOG.md` entry for every feature/fix: minor bump = feature, patch = fix/tweak (scheme table at top of file).
 - Commit messages summarize multiple features in one line; recent history uses squash merges from short-lived branches.

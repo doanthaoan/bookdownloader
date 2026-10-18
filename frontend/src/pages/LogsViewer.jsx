@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { logsApi } from '../api';
+import { logsApi, errMsg } from '../api';
 import Layout from '../components/Layout';
 
+/** How many trailing lines of a log file to show. */
+const LOG_LINES = 1000;
+
+/** Logs page: file list on the left, selected file's tail on the right. */
 const LogsViewer = () => {
   const [files, setFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -9,8 +13,10 @@ const LogsViewer = () => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
+  /** Load the file list, filtered by `search` (API call: logsApi.list; sets files/loading). */
   const fetchFiles = async () => {
     try {
+      // `search || undefined` drops the query param entirely when the box is empty.
       const res = await logsApi.list(search || undefined);
       setFiles(res.data);
     } catch (err) {
@@ -20,31 +26,39 @@ const LogsViewer = () => {
     }
   };
 
+  // Load once on mount.
   useEffect(() => {
     fetchFiles();
   }, []);
 
+  /** Submit handler for the filter box. */
   const handleSearch = (e) => {
     e.preventDefault();
     fetchFiles();
   };
 
+  /**
+   * Select a file and load its content (API call: logsApi.read).
+   * @param {string} name - log file name
+   */
   const handleSelectFile = async (name) => {
     setSelectedFile(name);
     try {
-      const res = await logsApi.read(name, 1000);
+      const res = await logsApi.read(name, LOG_LINES);
       setLogContent(res.data.content);
     } catch (err) {
-      setLogContent('Error reading log file: ' + err.message);
+      setLogContent('Error reading log file: ' + errMsg(err));
     }
   };
 
+  /** Human-readable byte size (B / KB / MB). */
   const formatSize = (bytes) => {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
+  /** Format a Unix timestamp (seconds) in local time; JS Date expects milliseconds. */
   const formatDate = (ts) => {
     return new Date(ts * 1000).toLocaleString();
   };
@@ -63,6 +77,7 @@ const LogsViewer = () => {
               />
             </form>
             <div className="space-y-1 max-h-[70vh] overflow-y-auto">
+              {/* Nested ternary: loading → empty → list. */}
               {loading ? (
                 <p className="text-sm text-gray-400">Loading...</p>
               ) : files.length === 0 ? (
