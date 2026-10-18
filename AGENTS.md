@@ -7,8 +7,8 @@ Two independent apps in one repo: `backend/` (FastAPI + Selenium + SQLite) and `
 Verification = compile-check backend + run the self-checks + build frontend:
 
 ```powershell
-# backend (run from backend/) — always use the project venv (backend/.venv, Python 3.13).
-# System `python` on PATH is C:\Python315 and has NO project deps.
+# backend (run from backend/) — always use the project venv (backend/.venv, Python 3.14).
+# System `python` (C:\Python314) has NO project deps — packages live only in the venv.
 .venv\Scripts\Activate.ps1           # once per terminal; or call .venv\Scripts\python.exe directly
 python -m py_compile app/api/<file>.py app/services/<file>.py
 python tests/test_render.py           # plain-assert checks of the pure text logic (render rules, parsers, status table)
@@ -19,7 +19,7 @@ npm run build                        # tsc && vite build — catches syntax/impo
 ```
 
 - `npm run build` is the only frontend check: sources are plain `.jsx` (`allowJs`, `checkJs: false`), so tsc validates almost nothing but vite fails on real errors.
-- Backend deps: `pip install -r requirements.txt` inside the activated venv. Recreate the venv with `C:\laragon\bin\python\python-3.13\python.exe -m venv .venv`. `.env` is optional (only `DOMAIN` fallback).
+- Backend deps: `pip install -r requirements.txt` inside the activated venv. Recreate the venv with `C:\Python314\python.exe -m venv .venv`. `.env` is optional (only `DOMAIN` fallback).
 
 ## Architecture invariants
 
