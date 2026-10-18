@@ -4,8 +4,9 @@ Book info + chapter list extractor (Selenium).
 Given a book page URL on the site, this module:
   - scrapes the book metadata (author, status, latest chapter, cover, tags,
     description) — `scrape_book_info`
-  - collects the full chapter list, following the site's pagination
-    (501 chapters per page) — `extract_chapter_list`
+  - collects the chapter list, following the site's pagination
+    (501 chapters per page), saving each page to the DB as soon as it is
+    read — `extract_chapter_list`
   - saves the book + chapters to the DB — `process_book_chapters`
 
 Chapters are only ever APPENDED (`append_new_chapters`): existing chapter
@@ -13,13 +14,12 @@ rows, and the content already downloaded into them, are never deleted.
 """
 
 import os
-import random
 import time
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -27,6 +27,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from app.config import TRUYENWIKI, book_dir
 from app.database import get_database
 from app.services.browser import inject_site_cookies, load_page, make_driver
+
+# Chapters per page of the site's chapter list (pagination data-start step).
+PAGE_SIZE = 501
 
 
 def download_cover_image(book_id: int, seo_title_basic: str, image_url: str, save_dir=None) -> str | None:
@@ -98,7 +101,8 @@ def append_new_chapters(book_id: int, extracted: list) -> int:
 
     Args:
         book_id: the book to append to.
-        extracted: list of {'title', 'url', 'order'} from extract_chapter_list().
+        extracted: list of {'title', 'url'} in site order (one page of
+            extract_chapter_list(), or any longer list).
 
     Returns:
         Number of chapters added.
@@ -244,33 +248,121 @@ class ChapterListExtractor:
 
         return info
 
-    def extract_chapter_list(self, book_url: str) -> list:
-        """Collect every chapter link of a book, following pagination.
+    def _read_chapter_page(self, selectors: list) -> list:
+        """Read the chapter links currently shown in the browser.
+
+        Args:
+            selectors: candidate CSS selectors, tried in order. The first one
+                that matches is moved to the front of the list (the list is
+                mutated in place), so later pages don't pay the 20 s timeout
+                for each selector that misses.
 
         Returns:
-            [{'order': 1, 'title': 'Chương 1 ...', 'url': '/truyen/.../chuong-1'}, ...]
-            or [] if nothing was found / an error happened (logged).
+            [{'title', 'url'}, ...] in page order, or [] if no selector matched.
+        """
+        wait = WebDriverWait(self.driver, 20)
+        for selector in selectors:
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+            except TimeoutException:
+                continue  # selector not on the page → try the next one
+            # Parse the HTML once with BeautifulSoup instead of asking Chrome
+            # for href + text of each link (2 WebDriver calls per chapter).
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            page = []
+            for a in soup.select(selector):
+                url = normalize_url(a.get('href', ''))
+                if url:
+                    page.append({'title': a.get_text(strip=True) or "Untitled Chapter", 'url': url})
+            selectors.remove(selector)
+            selectors.insert(0, selector)
+            return page  # safe: we leave the loop right after mutating the list
+        return []
 
-        Pagination: the site shows 501 chapters per page; the pagination links
-        carry a `data-start` attribute (0, 501, 1002, ...). We click the link
-        whose data-start is the next page's start until there is none.
+    def _click_page_toward(self, current: int, target: int, selector: str) -> int | None:
+        """Click the pagination link that gets closest to page `target`
+        without passing it, and wait until the chapter list shows that page.
+
+        Args:
+            current: data-start of the page shown now.
+            target: data-start we want to reach (current + PAGE_SIZE = next page).
+            selector: the chapter-link selector known to work (used to detect
+                that the list really changed).
+
+        Returns:
+            The data-start of the page now shown, or None if no pagination
+            link moves forward (last page reached / jump not possible).
+
+        Raises:
+            TimeoutException if the list did not change within 20 s. Better to
+            fail (pages so far are saved) than to re-read the old page and
+            then miss the real next one.
+        """
+        # Pagination links carry data-start (0, 501, 1002, ...). Keep the
+        # numeric ones strictly between current and target (inclusive).
+        starts = {}
+        for link in self.driver.find_elements(By.CSS_SELECTOR, ".volume-list ul.pagination a"):
+            ds = link.get_attribute('data-start') or ''
+            if ds.isdigit() and current < int(ds) <= target:
+                starts[int(ds)] = link
+        if not starts:
+            return None
+        best = max(starts)  # the furthest page we can reach in one click
+
+        # Remember the first chapter URL shown now, to notice when the AJAX
+        # reload has replaced the list.
+        try:
+            old_first = normalize_url(self.driver.find_element(By.CSS_SELECTOR, selector).get_attribute('href'))
+        except NoSuchElementException:
+            old_first = None
+
+        print(f"📄 Loading chapter page (start={best})...")
+        starts[best].click()
+        if old_first is None:
+            time.sleep(3)  # nothing to compare against → fall back to a fixed wait
+        else:
+            # Poll (every 0.5 s by default) until the first link is a different
+            # chapter. While the list is being replaced, the element can be
+            # missing or "stale" (removed from the page) — ignore those and retry.
+            WebDriverWait(self.driver, 20,
+                          ignored_exceptions=(NoSuchElementException, StaleElementReferenceException)
+                          ).until(lambda d: normalize_url(
+                              d.find_element(By.CSS_SELECTOR, selector).get_attribute('href')) != old_first)
+        return best
+
+    def extract_chapter_list(self, book_url: str, book_id: int) -> tuple[int, bool]:
+        """Collect the chapter links of a book, following pagination, and
+        save each page to the DB (append_new_chapters) as soon as it is read.
+
+        Saving per page means an error on page N keeps pages 1..N-1, so a
+        retry (Continue Extract) only adds what is still missing.
+
+        Resume: if the book already has chapters, we jump straight to the
+        page that should hold our newest saved chapter and continue from
+        there. If that chapter is not on that page (the site removed or
+        reordered chapters), we fall back to a full scan from page 1.
+
+        Args:
+            book_url: the book's page on the site.
+            book_id: the DB book the chapters are appended to.
+
+        Returns:
+            (added, ok): number of NEW chapters saved, and False if the run
+            failed or found nothing (logged). `added` can be > 0 with ok=False
+            when it failed part-way.
         """
         self._ensure_driver()
 
         t0 = time.time()
+        found = added = 0  # chained assignment: both start at 0
         try:
             # scrape_book_info usually just loaded this page — skip the second request.
             if self.driver.current_url.rstrip('/') != book_url.rstrip('/'):
                 print(f"🔍 Loading book page: {book_url}")
                 load_page(self.driver, book_url)
-            all_chapters = []
-            wait = WebDriverWait(self.driver, 20)
 
-            # Candidate CSS selectors for chapter links, tried in order. The
-            # first one that matches is used for the page.
-            # TODO: each miss waits up to 20 s; once the working selector is known
-            #       (likely "li.chapter-name a"), put it first or keep only it.
-            chapter_selectors = [
+            # Candidate CSS selectors for chapter links (see _read_chapter_page).
+            selectors = [
                 "ul.chapter-list a",
                 "div.chapter-list a",
                 "li.chapter-name a",
@@ -280,58 +372,64 @@ class ChapterListExtractor:
             ]
 
             current_start = 0
+            page = self._read_chapter_page(selectors)  # page 1 (also finds the selector)
+
+            # --- Resume from the page holding our newest saved chapter ---
+            existing = self.db.get_chapters_by_book(book_id)
+            # Our chapter_order is 1..N in site order, so chapter N sits on the
+            # page starting at (N-1)//PAGE_SIZE*PAGE_SIZE (// = integer division).
+            resume_start = (len(existing) - 1) // PAGE_SIZE * PAGE_SIZE if existing else 0
+            if resume_start and page:
+                newest_url = max(existing, key=lambda c: c['chapter_order'])['chapter_url']
+                # Walk toward the page; usually one click if the link is shown.
+                # Walrus `:=` assigns and tests in one expression.
+                while (current_start < resume_start and
+                       (nxt := self._click_page_toward(current_start, resume_start, selectors[0])) is not None):
+                    current_start = nxt
+                page = self._read_chapter_page(selectors)
+                if any(c['url'] == newest_url for c in page):
+                    print(f"⏩ Resumed at page start={current_start} (skipped {current_start} known chapters)")
+                else:
+                    print("↩️ Newest saved chapter not on the expected page — full scan from page 1")
+                    load_page(self.driver, book_url)
+                    current_start = 0
+                    page = self._read_chapter_page(selectors)
+
             while True:
-                for selector in chapter_selectors:
-                    try:
-                        elements = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector)))
-                        if elements:
-                            for el in elements:
-                                url = normalize_url(el.get_attribute('href'))
-                                title = el.text.strip() or "Untitled Chapter"
-                                if url:
-                                    all_chapters.append({'order': len(all_chapters) + 1, 'title': title, 'url': url})
-                            break  # stop trying selectors for this page
-                    except TimeoutException:
-                        continue  # selector not on the page → try the next one
+                # Save this page now, so an error on a later page doesn't lose it.
+                if page:
+                    found += len(page)
+                    added += append_new_chapters(book_id, page)
+                else:
+                    print(f"⚠️ No chapter links found on page start={current_start}")
 
-                # --- Go to the next page of the chapter list, if any ---
-                try:
-                    pagination_links = self.driver.find_elements(By.CSS_SELECTOR, ".volume-list ul.pagination a")
-                    next_start = current_start + 501
-                    # Find the link for the next page (None if this is the last page).
-                    target_link = next((link for link in pagination_links
-                                        if link.get_attribute('data-start') == str(next_start)), None)
-                    if target_link:
-                        print(f"📄 Loading next page (start={next_start})...")
-                        target_link.click()
-                        current_start = next_start
-                        # TODO: the list is reloaded by AJAX; waiting for the old
-                        #       elements to go stale would be safer than a fixed sleep.
-                        time.sleep(random.randint(2, 4))
-                    else:
-                        break
-                except NoSuchElementException:
+                # Next page, if any. _click_page_toward only moves forward,
+                # so this loop always ends.
+                nxt = self._click_page_toward(current_start, current_start + PAGE_SIZE, selectors[0])
+                if nxt is None:
                     break
+                current_start = nxt
+                page = self._read_chapter_page(selectors)
 
-                if len(all_chapters) > 10000:  # safety stop against an endless loop
-                    break
-
-            if not all_chapters:
+            if not found:
                 raise Exception("No chapters found on the page")
 
-            print(f"✅ Successfully extracted {len(all_chapters)} chapters.")
+            # `found` counts scanned chapters only (pages skipped by resume are not included).
+            print(f"✅ Successfully extracted {found} chapters ({added} new).")
             self.db.log_request("chapter_list", "success", session_type=self.session_type,
-                                domain=self.domain_host, url=book_url,
-                                detail=f"{len(all_chapters)} chapters",
+                                domain=self.domain_host, url=book_url, book_id=book_id,
+                                detail=f"{found} chapters, {added} new",
                                 duration_ms=int((time.time() - t0) * 1000))
-            return all_chapters
+            return added, True
 
         except Exception as e:
+            # Pages read before the error are already saved; report them.
             self.db.log_request("chapter_list", "failed", session_type=self.session_type,
-                                domain=self.domain_host, url=book_url, error=str(e),
+                                domain=self.domain_host, url=book_url, book_id=book_id,
+                                error=f"{e} (saved {found} found / {added} new before failing)",
                                 duration_ms=int((time.time() - t0) * 1000))
-            print(f"❌ Failed to extract chapter list from {book_url}: {e}")
-            return []
+            print(f"❌ Failed to extract chapter list from {book_url} after {found} chapters: {e}")
+            return added, False
 
     def save_book_info(self, book_id: int, seo_title_basic: str, info: dict):
         """Store scraped metadata on an existing book: fields, tags and cover image.
@@ -393,21 +491,20 @@ class ChapterListExtractor:
 
             # 3. Extract chapters AFTER the book is saved, so a chapter-list failure
             #    keeps the book info; chapters can be fetched later via Continue Extract.
-            chapters = self.extract_chapter_list(book_url)
-            if not chapters:
-                print(f"⚠️ Book saved (ID: {book_id}) but no chapters extracted for {book_title}. Retry later.")
+            #    Each page is appended as it is read (only chapters we don't have yet).
+            added, ok = self.extract_chapter_list(book_url, book_id)
+            if not ok:
+                print(f"⚠️ Book saved (ID: {book_id}) but chapter list incomplete for {book_title} "
+                      f"({added} saved). Use Continue Extract to finish.")
                 self.db.log_request("book_extract", "failed", session_type=self.session_type,
                                     domain=self.domain_host, url=book_url, book_id=book_id,
-                                    error="Book info saved, chapter list extraction failed")
+                                    error=f"Book info saved, chapter list incomplete ({added} chapters saved)")
                 return False
-
-            # 4. Append only chapters we don't have yet (never deletes existing ones).
-            added = append_new_chapters(book_id, chapters)
 
             self.db.log_request("book_extract", "success", session_type=self.session_type,
                                 domain=self.domain_host, url=book_url, book_id=book_id,
-                                detail=f"{len(chapters)} chapters, {added} new")
-            print(f"✅ Successfully processed {book_title}: {len(chapters)} found, {added} new")
+                                detail=f"{added} new chapters")
+            print(f"✅ Successfully processed {book_title}: {added} new")
             return True
 
         except Exception as e:

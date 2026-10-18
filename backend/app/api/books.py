@@ -33,7 +33,7 @@ import os
 import sqlite3
 import shutil
 from app.database import get_database
-from app.services.extractor import ChapterListExtractor, append_new_chapters, extract_chapters_for_book
+from app.services.extractor import ChapterListExtractor, extract_chapters_for_book
 from app.services.downloader import (download_book, cancel_download, get_download_progress,
                                      is_download_active, redownload_book, download_single_chapter)
 from app.services.translator import get_translation_progress
@@ -954,12 +954,12 @@ def update_book_full(book_id: int, background_tasks: BackgroundTasks, max_chapte
                 print(f"ℹ️ No new chapters for {book['title']} (latest chapter already in DB)")
                 return
 
-            # Step 3: New chapter detected — extract the full list, append only new ones
-            chapters = extractor.extract_chapter_list(book['book_url'])
-            if not chapters:
-                print(f"⚠️ No chapters found for {book['title']}")
-                return
-            added = append_new_chapters(book_id, chapters)
+            # Step 3: New chapter detected — extract the list; each page's new
+            # chapters are appended as it is read. On a part-way failure we
+            # still download whatever was added.
+            added, ok = extractor.extract_chapter_list(book['book_url'], book_id)
+            if not ok:
+                print(f"⚠️ Chapter list incomplete for {book['title']} ({added} new saved)")
         finally:
             # Close the extractor's Chrome before the downloader opens its own.
             extractor.close()
@@ -1002,12 +1002,9 @@ def continue_extract(book_id: int, background_tasks: BackgroundTasks):
             if info:
                 extractor.save_book_info(book_id, book['seo_title_basic'], info)
 
-            # Extract a fresh chapter list and append only the chapters we don't have
-            chapters = extractor.extract_chapter_list(book['book_url'])
-            if not chapters:
-                print(f"No chapters found for {book['title']}")
-                return
-            append_new_chapters(book_id, chapters)
+            # Extract the chapter list; each page's new chapters are appended
+            # as it is read (failures are logged inside).
+            extractor.extract_chapter_list(book['book_url'], book_id)
         finally:
             extractor.close()
 

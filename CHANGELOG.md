@@ -12,6 +12,24 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.5.0] — 2026-10-19
+
+### Added
+
+- **Chapter list extraction resumes where it stopped.** When a book already has chapters, `extract_chapter_list()` jumps to the page that should hold the newest saved chapter and continues from there. Earlier pages are not re-read. If that chapter is not on that page (the site removed or reordered chapters), it falls back to a full scan from page 1.
+
+### Changed
+
+- **The chapter list is saved page by page.** `extract_chapter_list(book_url, book_id)` calls `append_new_chapters()` after each page of 501 chapters and returns `(added, ok)`. An error on a later page keeps the pages already read, and those chapters can be downloaded straight away. Extraction, Continue Extract and Update & Download all use it. Update & Download still downloads what was added when the list stops part-way.
+- **Faster page reading.** Chapter links are parsed once from the page HTML with BeautifulSoup (`_read_chapter_page`) instead of about 1,000 WebDriver calls per page. The chapter-link selector that works is tried first on later pages, so a selector that doesn't match only costs its 20 s timeout once.
+- **Removed the 10,000-chapter safety stop.** The loop can only move forward now, so books with more chapters are no longer cut off.
+
+### Fixed
+
+- **No more silently missed chapter pages.** After clicking to the next page, `_click_page_toward()` waits until the chapter list actually changes instead of sleeping a fixed 2–4 s. On a slow reload it used to re-read the old page and could stop early. Now it fails with an error, and the pages already read stay saved.
+
+---
+
 ## [1.4.12] — 2026-10-19
 
 ### Fixed
