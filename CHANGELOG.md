@@ -12,6 +12,15 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.4.12] — 2026-10-19
+
+### Fixed
+
+- **Downloaded chapters no longer show the title twice.** Many source pages repeat the heading as the first paragraph. The new `docx_exporter.drop_repeated_title()` (called from `chapter_text()`, so it covers the DOCX and the preview) removes the first paragraph when it has the same "Chương N" number as the title and is at most twice as long. This happens at render time, so books already downloaded (e.g. book 49) are fixed on the next export without changing the DB.
+- `tests/test_render.py` has a new check (`check_drop_repeated_title`), for 10 in total.
+
+---
+
 ## [1.4.11] — 2026-10-19
 
 ### Fixed

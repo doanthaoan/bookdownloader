@@ -84,8 +84,45 @@ def chapter_text(ch, is_translated: bool) -> tuple:
     else:
         # Fallback title "Chương N" (Vietnamese for "Chapter N") if none stored.
         title = ch.get("chapter_title") or f"Chương {ch.get('chapter_order')}"
-        body = ch.get("chapter_content") or ""
+        body = drop_repeated_title(title, ch.get("chapter_content") or "")
     return title, body
+
+
+# Captures the chapter NUMBER of a heading like "Chương 12 ..." (group 1).
+# re.IGNORECASE also matches "chương" / "CHƯƠNG".
+CHUONG_NO_RE = re.compile(r"^\s*Chương\s*(\d+)", re.IGNORECASE)
+
+
+def drop_repeated_title(title: str, body: str) -> str:
+    """Remove the first paragraph of a downloaded chapter body if it repeats
+    the chapter title. Many source pages print the heading again as the first
+    <p>, so the DOCX showed the title twice. This is the downloaded-book version
+    of the same check in translator.parse_raw_file.
+
+    Done at RENDER time (not at save time), so already-downloaded books are
+    fixed too and the DB text stays untouched.
+
+    Args:
+        title: the chapter title, e.g. "Chương 3 vô sỉ tiểu sw sửa sang lại đăng?".
+        body: stored content, paragraphs joined by "\\n\\n".
+
+    Returns:
+        str: the body without the repeated heading (or unchanged).
+
+    How the match works:
+        The repeat often differs a little (e.g. "s*w* chỉnh * lý" in the body
+        vs "sw sửa sang lại" in the title), so the texts are not compared
+        exactly. Instead, both must start with the same "Chương N" number, AND
+        the paragraph must be no more than twice as long as the title, so a real
+        story paragraph that happens to start with "Chương N" is kept.
+    """
+    # partition("\n\n") -> (first paragraph, separator, the rest).
+    first, _, rest = body.partition("\n\n")
+    # Walrus `:=` assigns AND tests in one expression.
+    if ((m_title := CHUONG_NO_RE.match(title)) and (m_first := CHUONG_NO_RE.match(first))
+            and m_title.group(1) == m_first.group(1) and len(first) <= 2 * len(title)):
+        return rest.lstrip("\n")
+    return body
 
 
 def build_render_rules(db, book: dict) -> list:

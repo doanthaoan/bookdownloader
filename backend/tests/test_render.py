@@ -146,6 +146,19 @@ def check_source_file_guard():
             assert e.status_code == 400
 
 
+def check_drop_repeated_title():
+    """A body that starts with (roughly) the chapter title loses that paragraph."""
+    from app.services.docx_exporter import drop_repeated_title
+    title = "Chương 3 vô sỉ tiểu sw sửa sang lại đăng?"
+    # Same chapter number, slightly different text -> dropped.
+    assert drop_repeated_title(title, "Chương 3 vô sỉ tiểu s*w* chỉnh * lý đăng?\n\nA\n\nB") == "A\n\nB"
+    # Different number, no heading, or a long real paragraph -> kept.
+    assert drop_repeated_title(title, "Chương 4 x\n\nA") == "Chương 4 x\n\nA"
+    assert drop_repeated_title(title, "A\n\nB") == "A\n\nB"
+    long_para = "Chương 3 " + "x" * 200
+    assert drop_repeated_title(title, long_para) == long_para
+
+
 if __name__ == "__main__":
     # Run every function whose name starts with "check_" (in definition order).
     checks = [f for name, f in list(globals().items()) if name.startswith("check_")]
