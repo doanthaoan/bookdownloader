@@ -8,7 +8,8 @@ Overview:
   chapters (the API layer stores them in the DB).
 - Translator.translate_book() / retranslate_book() translate the stored
   chapters in a background thread, saving the RAW translation into
-  chapters.translated_content and rendering the DOCX via docx_exporter.
+  chapters.translated_content. The DOCX is only rendered on demand (Export
+  button → docx_exporter), never automatically.
 
 Two translation methods:
 - 'api': a direct HTTP POST to the site's AJAX endpoint (fast). The site sits
@@ -36,12 +37,11 @@ import time
 import random
 import threading
 import requests
-from pathlib import Path
 from urllib.parse import urlparse
 
 from colorama import Fore, init
 
-from app.config import book_dir, get_user_agent
+from app.config import get_user_agent
 from app.database import get_database
 from app.services.browser import load_page, make_driver
 
@@ -895,34 +895,8 @@ class Translator:
             print(f"{Fore.RED}Translation method '{method}' not usable: {e}")
             return False
 
-    def _export_docx(self, book: dict, output_docx: Path):
-        """Render the book DOCX from DB content (source of truth), applying
-        global cleaning + per-book corrections at render time. Idempotent — safe
-        to call any time after chapters have been translated/downloaded.
-
-        Args:
-            book: book row dict.
-            output_docx: target file path.
-
-        Returns:
-            Path: the written DOCX path.
-
-        Raises:
-            Exception: any DOCX/IO error (see _export_docx_safe for the
-            non-raising variant).
-
-        Side effects:
-            Writes the DOCX file. No DB writes.
-        """
-        # Imported inside the function (lazy import) — commonly done to avoid
-        # circular imports or loading python-docx until it is needed.
-        from app.services.docx_exporter import build_book_docx, build_render_rules
-        chapters = self.db.get_chapters_by_book(book["id"])
-        rules = build_render_rules(self.db, book)
-        return build_book_docx(book, chapters, rules, output_docx)
-
     def _translate_run(self, book_id: int, method: str, chapters_to_process: list,
-                       output_docx: Path, task: TranslateTask):
+                       task: TranslateTask):
         """Shared loop: translate each chapter, save the RAW (uncorrected)
         translation to the DB (source of truth), and update statuses.
         Per-book corrections are applied later at DOCX export time (idempotent
@@ -933,7 +907,6 @@ class Translator:
             book_id: the book being translated.
             method: 'api' or 'web'.
             chapters_to_process: chapter row dicts to translate, in order.
-            output_docx: DOCX path (its file name is stored on each chapter).
             task: the running TranslateTask (progress + cancel flag).
 
         Returns:
@@ -992,7 +965,7 @@ class Translator:
                 self.db.update_chapter_translated_content(
                     ch["id"], f"{translated_title}\n{translated_content}")
 
-                self.db.update_chapter_status(ch["id"], "completed", file_path=output_docx.name)
+                self.db.update_chapter_status(ch["id"], "completed")
                 success_count += 1
                 task.set(success_count=success_count, message=f"Translated: {translated_title}")
                 print(f"{Fore.GREEN}Translated: {translated_title} ({idx}/{total})")
@@ -1104,27 +1077,9 @@ class Translator:
             raise TranslationRunningError("Translation already running for this book")
         return book, task
 
-    def _export_docx_safe(self, book: dict, output_docx: Path, note: str = ""):
-        """Export the DOCX, printing (not raising) any error — a failed export
-        must never hide the translation result.
-
-        Args:
-            book: book row dict.
-            output_docx: target file path.
-            note: extra text for the log line, e.g. " (partial)".
-
-        Side effects:
-            Writes the DOCX file.
-        """
-        try:
-            self._export_docx(book, output_docx)
-            print(f"{Fore.CYAN}--- DOCX exported{note}: {output_docx.name} ---")
-        except Exception as e:
-            print(f"{Fore.RED}DOCX export failed: {e}")
-
     def translate_book(self, book_id: int, method: str = "api", run_async: bool = True,
                        max_chapters: int = None):
-        """Translate PENDING chapters into the main `{book_id}_{seo}.docx`.
+        """Translate PENDING chapters and store the translations in the DB.
 
         Mirrors downloader.run(): only 'pending' chapters are processed and the
         book status ends as completed / paused / cancelled / failed / ...
@@ -1150,7 +1105,7 @@ class Translator:
                                started_msg=f"Translation started for {book['title']}")
 
     def retranslate_book(self, book_id: int, method: str = "api", run_async: bool = True):
-        """Re-translate FAILED chapters into a separate `{book_id}_{seo}_retranslate.docx`.
+        """Re-translate FAILED chapters and store the translations in the DB.
 
         Mirrors downloader.run_redownload(). The original Chinese content is never overwritten.
 
@@ -1176,9 +1131,11 @@ class Translator:
         """Body of translate_book AND retranslate_book (runs inside _start_job's
         guarded wrapper). The two modes differ only in a few settings:
 
-            mode         chapters picked   output file                 session limit
-            translate    'pending'         {id}_{seo}.docx              max_chapters
-            retranslate  'failed'          {id}_{seo}_retranslate.docx  none
+            mode         chapters picked   session limit
+            translate    'pending'         max_chapters
+            retranslate  'failed'          none
+
+        No DOCX is written: the user exports on demand (Export button).
 
         Args:
             task: the registered task (progress + cancel flag).
@@ -1191,23 +1148,20 @@ class Translator:
             Exception: re-raised from _translate_run after marking the book failed.
 
         Side effects:
-            DB writes (book + chapter statuses, translations); writes the DOCX.
+            DB writes (book + chapter statuses, translations).
         """
         book_id = book["id"]
-        # Conditional expressions (`a if cond else b`) pick the mode's settings.
+        # Conditional expression (`a if cond else b`) picks the mode's setting.
         pick_status = "failed" if retranslate else "pending"
-        suffix = "_retranslate" if retranslate else ""
-        output_docx = book_dir() / f"{book_id}_{book['seo_title_basic']}{suffix}.docx"
 
         all_chapters = self.db.get_chapters_by_book(book_id)
         chapters_to_process = [c for c in all_chapters if c["download_status"] == pick_status]
 
         if not chapters_to_process:
-            # Nothing to do: just (re)render the DOCX. The status is not touched,
-            # so the book doesn't get stuck in 'in_progress'.
+            # Nothing to do. The status is not touched, so the book doesn't get
+            # stuck in 'in_progress'.
             msg = "No failed chapters to re-translate." if retranslate else "All chapters already translated."
             print(f"{Fore.GREEN}{msg} ('{book['title']}')")
-            self._export_docx_safe(book, output_docx)
             task.set(message=msg)
             return
 
@@ -1221,12 +1175,11 @@ class Translator:
 
         self.db.update_book_status(book_id, "in_progress", total_chapters=book.get("total_chapters"))
         try:
-            success, fail = self._translate_run(book_id, method, chapters_to_process, output_docx, task)
+            success, fail = self._translate_run(book_id, method, chapters_to_process, task)
         except Exception:
-            # e.g. the probe failed: mark failed, keep whatever was translated,
-            # re-raise so _start_job records the message.
+            # e.g. the probe failed: mark failed (whatever was translated is
+            # already in the DB), re-raise so _start_job records the message.
             self.db.update_book_status(book_id, "failed")
-            self._export_docx_safe(book, output_docx, " (partial)")
             raise
 
         fresh = self.db.get_chapters_by_book(book_id)
@@ -1237,7 +1190,6 @@ class Translator:
         self.db.update_book_status(book_id, new_status, downloaded_chapters=done)
         label = "re-translation" if retranslate else "translation"
         task.set(message=f"Finished {label}: {success}/{len(chapters_to_process)} chapters ({new_status})")
-        self._export_docx_safe(book, output_docx)
 
     @staticmethod
     def _final_status(task: TranslateTask, retranslate: bool, limited: bool,
@@ -1311,9 +1263,8 @@ def cancel_all_translations():
 
 
 def continue_book(book_id: int, method: str = "api", run_async: bool = True):
-    """Reset failed chapters back to 'pending' and resume them into the MAIN DOCX.
-    Use this after updating a stale cf_clearance cookie: it appends the retried
-    chapters to {book_id}_{seo}.docx instead of a separate _retranslate.docx.
+    """Reset failed chapters back to 'pending' and resume translating them.
+    Use this after updating a stale cf_clearance cookie.
 
     Args:
         book_id: book to continue.

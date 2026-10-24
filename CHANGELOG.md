@@ -12,6 +12,17 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.6.1] — 2026-10-25
+
+### Changed
+
+- **DOCX is only exported when you click Export.** Download, re-download, single-chapter download, update-full, translate, re-translate and continue no longer write any DOCX. Review and correct the book first, then use **Export Corrected** (`POST /api/books/{id}/export-corrected`), which is now the only DOCX writer.
+- **Removed the outputs of the old auto-export.** The **Auto DOCX** toggle, the **Open DOCX** / **Open Redownload DOCX** / **Open Re-translate DOCX** buttons and their endpoints are gone (`toggle-auto-export`, `docx`, `docx-info`, `redownload-docx(-info)`, `retranslate-docx(-info)`). Old files on disk are left untouched. The `auto_export_docx` column is no longer read or written, and chapters no longer store a DOCX file name.
+
+### Fixed
+
+- **Exporting long books is fast.** python-docx searched the whole document for every new paragraph, so export time grew quadratically. Book 51 (3274 chapters) took more than 10 minutes and now takes about 19 s. Paragraphs are inserted in constant time (`_append_paragraph`). The output XML is byte-identical, with all corrections and global rules still applied. This is covered by `check_fast_docx_matches_python_docx`.
+
 ## [1.6.0] — 2026-10-21
 
 ### Added

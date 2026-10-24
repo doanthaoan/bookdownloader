@@ -3,10 +3,10 @@ import { bookApi, errMsg } from '../../api';
 
 /**
  * Sticky toolbar at the top of BookDetails: Back, Edit Info, Corrections,
- * and the favorite / sent / auto-DOCX toggles.
+ * and the favorite / sent toggles.
  *
  * @param {object} props
- * @param {object} props.book - book row (reads is_favorite, is_sent, auto_export_docx)
+ * @param {object} props.book - book row (reads is_favorite, is_sent)
  * @param {boolean} props.editOpen - whether the Edit Info form is shown
  * @param {boolean} props.correctionsOpen - whether the Corrections modal is shown
  * @param {() => void} props.onBack - go back to the book list
@@ -52,14 +52,6 @@ const BookToolbar = ({ book, editOpen, correctionsOpen, onBack, onToggleEdit, on
           title={book.is_sent ? 'Mark as not sent' : 'Mark as sent'}>
           ✓ {book.is_sent ? 'Sent' : 'Not sent'}
         </button>
-        <label className={`flex items-center gap-1.5 text-sm leading-none px-2 py-1 rounded transition cursor-pointer select-none ${book.auto_export_docx ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-400 hover:text-gray-600'}`}
-          title="Export DOCX automatically after each download/redownload">
-          {/* `!!` turns 0/1 into false/true; a checkbox's `checked` expects a boolean. */}
-          <input type="checkbox" checked={!!book.auto_export_docx}
-            onChange={() => toggle(bookApi.toggleAutoExport)}
-            className="h-4 w-4" />
-          Auto DOCX
-        </label>
       </div>
     </div>
   );

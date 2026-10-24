@@ -37,8 +37,10 @@ from pathlib import Path
 import re
 
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.text.paragraph import Paragraph
 
 
 def _find_cover_image(save_dir, book_id: int, seo_basic: str):
@@ -346,6 +348,41 @@ def diff_rules(text: str, rules: list) -> list:
     return segments
 
 
+def _append_paragraph(doc, sect_pr, text: str, style: str = None) -> Paragraph:
+    """Append a paragraph to the document body in constant time.
+
+    Why not `doc.add_paragraph()`: python-docx inserts every new paragraph
+    before the body's final <w:sectPr> (page settings) and FINDS that element
+    by scanning all body children each time. With ~100 paragraphs per chapter
+    that makes a whole-book export quadratic (3000+ chapters took >10 minutes).
+    Here the caller looks up sectPr ONCE and we insert right before it with
+    lxml's `addprevious` (O(1)). The resulting XML is identical to
+    `doc.add_paragraph(text, style)` (verified on real books with corrections).
+
+    Args:
+        doc: the python-docx Document being built.
+        sect_pr: the body's <w:sectPr> element, looked up once by the caller.
+        text: paragraph text (already corrected; an empty string adds no run).
+        style: optional style name, e.g. "Heading 1".
+
+    Returns:
+        Paragraph: the new paragraph (python-docx wrapper).
+
+    Side effects:
+        Mutates `doc` in memory.
+    """
+    # TODO: relies on python-docx internals (`doc.element.body`, `doc._body`);
+    # re-check this helper after upgrading python-docx.
+    p = OxmlElement("w:p")
+    sect_pr.addprevious(p)
+    para = Paragraph(p, doc._body)
+    if text:
+        para.add_run(text)
+    if style is not None:
+        para.style = style
+    return para
+
+
 def build_book_docx(book: dict, chapters: list, rules: list, output_path,
                     chapter_ids=None) -> Path:
     """Render a DOCX from DB chapter content, applying the render rules at
@@ -390,16 +427,22 @@ def build_book_docx(book: dict, chapters: list, rules: list, output_path,
         run_author.italic = True
 
     is_translated = bool(book.get("is_translated"))
+    # Looked up once: `body.sectPr` itself scans every body child (see _append_paragraph).
+    sect_pr = doc.element.body.sectPr
+    # A set makes the `in` check O(1) per chapter instead of scanning a list.
+    wanted = set(chapter_ids) if chapter_ids else None
     for ch in chapters:
-        if chapter_ids and ch["id"] not in chapter_ids:
+        if wanted and ch["id"] not in wanted:
             continue
         title, body = chapter_text(ch, is_translated)
         title = apply_rules(title, rules).strip()
         # Translated text is cleaned per line (see apply_paragraphs), then blank
         # runs left behind by removals are collapsed.
         body = collapse_blank_lines(apply_paragraphs(body, rules, preserve_newlines=is_translated))
+        # Rules were already applied to `title` and `body` above, so only
+        # corrected text reaches the document.
         if title:
-            doc.add_heading(title, level=1)
+            _append_paragraph(doc, sect_pr, title, "Heading 1")
         # Paragraph separator differs by storage convention (see module docstring):
         # translated = one paragraph per line, downloaded = blank-line separated.
         if is_translated:
@@ -409,7 +452,7 @@ def build_book_docx(book: dict, chapters: list, rules: list, output_path,
         for para in paragraphs:
             para = para.strip()
             if para:
-                doc.add_paragraph(para)
+                _append_paragraph(doc, sect_pr, para)
 
     out = Path(output_path)
     # parents=True creates missing parent folders; exist_ok=True: no error if it exists.

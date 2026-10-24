@@ -45,8 +45,6 @@ export const bookApi = {
   delete: (id) => api.delete(`/books/${id}`),
   redownload: (id, params = {}) => api.post(`/books/${id}/redownload`, null, { params }),
   downloadChapter: (bookId, chapterId) => api.post(`/books/${bookId}/chapters/${chapterId}/download`),
-  docxInfo: (id) => api.get(`/books/${id}/docx-info`),
-  redownloadDocxInfo: (id) => api.get(`/books/${id}/redownload-docx-info`),
   // Body is a JSON array of chapter ids; an empty array means "whole book".
   exportCorrected: (id, chapterIds = []) => api.post(`/books/${id}/export-corrected`, chapterIds),
   exportCorrectedDocxInfo: (id) => api.get(`/books/${id}/export-corrected-docx-info`),
@@ -54,10 +52,7 @@ export const bookApi = {
   previewCorrection: (id, chapterId) => api.post(`/books/${id}/preview-correction`, null, { params: { chapter_id: chapterId } }),
   toggleFavorite: (id) => api.post(`/books/${id}/toggle-favorite`),
   toggleSent: (id) => api.post(`/books/${id}/toggle-sent`),
-  toggleAutoExport: (id) => api.post(`/books/${id}/toggle-auto-export`),
   coverUrl: (id) => `${API_ORIGIN}/api/books/${id}/cover`,
-  docxUrl: (id) => `${API_ORIGIN}/api/books/${id}/docx`,
-  redownloadDocxUrl: (id) => `${API_ORIGIN}/api/books/${id}/redownload-docx`,
   checkUpdates: () => api.get('/books/updates/check'),
   refreshInfo: (id) => api.post(`/books/${id}/refresh-info`),
   continueExtract: (id) => api.post(`/books/${id}/continue-extract`),
@@ -137,8 +132,6 @@ export const translateApi = {
   retranslate: (id, method = 'api') => api.post(`/translate/books/${id}/retranslate`, null, { params: { method } }),
   continueRun: (id, method = 'api') => api.post(`/translate/books/${id}/continue`, null, { params: { method } }),
   refreshCookies: () => api.post('/translate/refresh-cookies'),
-  retranslateDocxInfo: (id) => api.get(`/translate/books/${id}/retranslate-docx-info`),
-  retranslateDocxUrl: (id) => `${API_ORIGIN}/api/translate/books/${id}/retranslate-docx`,
   progress: (id) => api.get(`/translate/books/${id}/progress`),
   cancel: (id) => api.post(`/translate/books/${id}/cancel`),
 };

@@ -27,7 +27,7 @@ Backend (`backend/app/`):
 | `services/docx_exporter.py` | `build_render_rules`, `apply_rules/apply_paragraphs`, `diff_rules` (preview), `collapse_blank_lines`, `build_book_docx` |
 | `services/text_cleaner.py` | `TextCleaner.clean()` — global rules at download-save time |
 | `services/login.py` | `auto_login` (headless Selenium → cookies to settings) |
-| `api/books.py` | `get_book_or_404`, `docx_path/docx_info/docx_response` helpers; books CRUD, extract, download/redownload/single, progress, docx/redownload/corrected file endpoints, preview, cover, refresh-info, updates/check, update-full, continue-extract |
+| `api/books.py` | `get_book_or_404`, `docx_path/docx_info/docx_response` helpers; books CRUD, extract, download/redownload/single, progress, export-corrected (the ONLY DOCX writer — no auto-export) + its file endpoints, preview, cover, refresh-info, updates/check, update-full, continue-extract |
 | `api/translate.py` | source files, parse, create translated book, corrections (+copy), run/retranslate/continue/cancel/progress, refresh-cookies |
 | `api/settings.py`, `text_cleaning.py`, `logs.py`, `stats.py` | as named |
 

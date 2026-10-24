@@ -62,18 +62,18 @@ const TranslateActions = ({ bookId, downloading, isCompleted, failedCount, total
     return runJob(method => translateApi.run(bookId, method, val > 0 ? val : null), 'Translate');
   };
 
-  /** Re-translate failed chapters into _retranslate.docx (API call: retranslate). */
+  /** Re-translate failed chapters (API call: retranslate). */
   const handleRetranslate = () => runJob(
     method => translateApi.retranslate(bookId, method),
     'Re-translate',
-    'Re-translate failed chapters? Output goes to _retranslate.docx.',
+    'Re-translate failed chapters?',
   );
 
-  /** Retry failed chapters into the main DOCX (API call: continueRun). */
+  /** Reset failed chapters to pending and translate them again (API call: continueRun). */
   const handleContinue = () => runJob(
     method => translateApi.continueRun(bookId, method),
     'Continue',
-    'Continue failed chapters into the main DOCX? Use after updating the Cloudflare cookie.',
+    'Continue failed chapters? Use after updating the Cloudflare cookie.',
   );
 
   /** Open Chrome so Cloudflare issues a fresh cookie (API call: refreshCookies; waits until done). */
@@ -118,7 +118,7 @@ const TranslateActions = ({ bookId, downloading, isCompleted, failedCount, total
           {(!isCompleted || failedCount > 0) && (
             <button onClick={handleContinue} disabled={failedCount === 0}
               className={`bg-teal-600 hover:bg-teal-700 disabled:bg-gray-400 ${BTN}`}
-              title="Reset failed chapters to pending and append them to the main DOCX">
+              title="Reset failed chapters to pending and translate them again">
               Continue ({failedCount} failed)
             </button>
           )}

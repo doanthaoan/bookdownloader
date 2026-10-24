@@ -51,11 +51,8 @@ db = get_database()
 
 # ---------------------------------------------------------------------------
 # DOCX file helpers — every book DOCX is named {book_id}_{seo_title_basic}{suffix}.docx
-# in config.book_dir(). Suffixes in use:
-#   ""             main file (download / translate)
-#   "_redownload"  re-downloaded chapters
-#   "_corrected"   Export Corrected
-#   "_retranslate" re-translated chapters (used by api/translate.py)
+# in config.book_dir(). The only DOCX the app writes is "_corrected" (Export
+# button); downloads/translations never export automatically.
 # ---------------------------------------------------------------------------
 
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -75,7 +72,7 @@ def docx_path(book: dict, suffix: str = "") -> Path:
 
 
 def docx_info(book: dict, suffix: str = "") -> dict:
-    """File info used by the *-docx-info endpoints.
+    """File info used by the export-corrected(-docx-info) endpoints.
 
     Returns:
         {"exists": bool, "file_name": str, "file_path": absolute path or None,
@@ -303,7 +300,7 @@ def get_chapters(book_id: int):
 @router.post("/{book_id}/download")
 def download_book_task(book_id: int, background_tasks: BackgroundTasks, max_chapters: int = None):
     """
-    Start downloading the book to DOCX.
+    Start downloading the book's chapters into the DB.
     Runs in background.
     max_chapters: Limit the number of chapters to download in this session (for rate limiting).
 
@@ -313,7 +310,7 @@ def download_book_task(book_id: int, background_tasks: BackgroundTasks, max_chap
     Errors: 404 no book; 409 a download is already running; 400 for translated
     books (their content comes from the Translate tool, not the website).
     Side effects (in background): OPENS CHROME, downloads pending chapters,
-    writes chapter content/status to the DB, builds the main DOCX.
+    writes chapter content/status to the DB. No DOCX is built.
     """
     book = db.get_book(book_id)
     if not book:
@@ -358,7 +355,7 @@ def cancel_download_task(book_id: int):
 def redownload_book_task(book_id: int, background_tasks: BackgroundTasks,
                                all_chapters: bool = False, count: int = None,
                                start_order: int = None, end_order: int = None):
-    """Re-download chapters into a separate _redownload.docx.
+    """Re-download chapters, overwriting their stored content in the DB.
 
     By default only re-downloads failed chapters.
     Set all_chapters=true to re-download every chapter (fresh copy).
@@ -370,8 +367,8 @@ def redownload_book_task(book_id: int, background_tasks: BackgroundTasks,
 
     Response: ``{"message": str}`` describing which chapters were selected.
     Errors: 404 no book, 409 a download is already running.
-    Side effects (in background): OPENS CHROME, updates chapter rows,
-    writes {book_id}_{seo}_redownload.docx.
+    Side effects (in background): OPENS CHROME, updates chapter rows. No DOCX
+    is written (export on demand via export-corrected).
     """
     book = db.get_book(book_id)
     if not book:
@@ -398,16 +395,15 @@ def redownload_book_task(book_id: int, background_tasks: BackgroundTasks,
         label = "all chapters"
     else:
         label = "failed chapters"
-    return {"message": f"Re-download started for {book['title']} ({label}). Output goes to _redownload.docx."}
+    return {"message": f"Re-download started for {book['title']} ({label})."}
 
 @router.post("/{book_id}/chapters/{chapter_id}/download")
 def download_single_chapter_task(book_id: int, chapter_id: int, background_tasks: BackgroundTasks):
     """POST /api/books/{book_id}/chapters/{chapter_id}/download -- download a
-    single chapter and append to _redownload.docx.
+    single chapter into the DB.
 
     Response: ``{"message": str}``. Errors: 404 no book, 409 download running.
-    Side effects (in background): OPENS CHROME, updates that chapter row,
-    appends to {book_id}_{seo}_redownload.docx.
+    Side effects (in background): OPENS CHROME, updates that chapter row.
     """
     book = db.get_book(book_id)
     if not book:
@@ -423,28 +419,6 @@ def download_single_chapter_task(book_id: int, chapter_id: int, background_tasks
 
     background_tasks.add_task(run)
     return {"message": f"Download started for chapter {chapter_id} of '{book['title']}'."}
-
-@router.get("/{book_id}/redownload-docx-info")
-def get_redownload_docx_info(book_id: int):
-    """GET /api/books/{book_id}/redownload-docx-info -- check if _redownload.docx exists.
-
-    Response: ``{"exists": bool, "file_name": str, "file_path": abs path|None, "size": bytes}``.
-    Errors: 404 only if the BOOK is missing (a missing file is ``exists: false``).
-    """
-    return docx_info(get_book_or_404(book_id), "_redownload")
-
-
-@router.get("/{book_id}/redownload-docx")
-def get_redownload_docx(book_id: int):
-    """GET /api/books/{book_id}/redownload-docx -- download the _redownload.docx file.
-
-    Response: the file. ``FileResponse`` streams it from disk; ``filename=`` sets
-    the Content-Disposition header so the browser saves it under that name.
-    Errors: 404 if the book or the file is missing.
-    """
-    return docx_response(get_book_or_404(book_id), "_redownload",
-                         "Redownload DOCX file not found.")
-
 
 @router.get("/{book_id}/progress")
 def get_progress(book_id: int):
@@ -484,24 +458,6 @@ def get_progress(book_id: int):
         "wait_seconds": progress["wait_seconds"],
     }
 
-@router.get("/{book_id}/docx")
-def get_docx(book_id: int):
-    """GET /api/books/{book_id}/docx -- download the main DOCX file for a book.
-
-    Errors: 404 if the book is missing or the DOCX has not been built yet.
-    """
-    return docx_response(get_book_or_404(book_id), "",
-                         "DOCX file not found. Please download the book first.")
-
-
-@router.get("/{book_id}/docx-info")
-def get_docx_info(book_id: int):
-    """GET /api/books/{book_id}/docx-info -- check if the main DOCX exists and return its info.
-
-    Response: ``{"exists", "file_name", "file_path", "size"}`` (see redownload-docx-info).
-    Errors: 404 if the book is missing.
-    """
-    return docx_info(get_book_or_404(book_id), "")
 
 
 @router.post("/{book_id}/export-corrected")
@@ -728,22 +684,6 @@ def toggle_sent(book_id: int):
     db.update_book_info(book_id, is_sent=new_val)
     return {"is_sent": new_val, "message": "Marked as sent" if new_val else "Marked as not sent"}
 
-@router.post("/{book_id}/toggle-auto-export")
-def toggle_auto_export(book_id: int):
-    """POST /api/books/{book_id}/toggle-auto-export -- toggle whether a DOCX is
-    exported automatically after download.
-
-    Response: ``{"auto_export_docx": 0|1, "message"}``. Errors: 404 no book.
-    Side effect: updates books.auto_export_docx.
-    """
-    book = db.get_book(book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found")
-    new_val = 0 if book.get('auto_export_docx') else 1
-    db.update_book_info(book_id, auto_export_docx=new_val)
-    return {"auto_export_docx": new_val,
-            "message": "Auto DOCX export enabled" if new_val else "Auto DOCX export disabled"}
-
 @router.put("/{book_id}")
 def update_book_info(book_id: int, req: UpdateBookInfoRequest):
     """PUT /api/books/{book_id} -- update editable book metadata (title, author,
@@ -928,7 +868,7 @@ def update_book_full(book_id: int, background_tasks: BackgroundTasks, max_chapte
     Response: ``{"message"}`` immediately.
     Errors: 404 no book, 409 a download/translation is running.
     Side effects: opens Chrome (twice, sequentially), writes book info, new
-    chapter rows, chapter content and the DOCX.
+    chapter rows and chapter content (no DOCX).
     """
     book = db.get_book(book_id)
     if not book:

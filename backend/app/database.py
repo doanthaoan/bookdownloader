@@ -203,7 +203,6 @@ class NovelDatabase:
             "ALTER TABLE books ADD COLUMN short_description TEXT",
             "ALTER TABLE books ADD COLUMN source_file TEXT",
             "ALTER TABLE books ADD COLUMN is_translated INTEGER DEFAULT 0",
-            "ALTER TABLE books ADD COLUMN auto_export_docx INTEGER DEFAULT 1",
             "ALTER TABLE chapters ADD COLUMN chapter_content TEXT",
             "ALTER TABLE chapters ADD COLUMN translated_content TEXT",
         ]
@@ -419,7 +418,7 @@ class NovelDatabase:
         allowed = {'title', 'author', 'book_web_status', 'last_chapter_url',
                    'last_chapter_title', 'last_update_date', 'total_chapters',
                    'is_favorite', 'is_sent', 'cover_image_url', 'short_description',
-                   'source_file', 'is_translated', 'notes', 'auto_export_docx'}
+                   'source_file', 'is_translated', 'notes'}
         # Dict comprehension: keep only the allowed keys. We filter on key
         # presence (not on `v is not None`) so a caller can clear a field.
         updates = {k: v for k, v in kwargs.items() if k in allowed}
@@ -696,17 +695,15 @@ class NovelDatabase:
         
         return [dict(row) for row in cursor.fetchall()]
     
-    def update_chapter_status(self, chapter_id: int, status: str, 
-                             file_path: str = None, 
+    def update_chapter_status(self, chapter_id: int, status: str,
                              error_message: str = None):
         """Update chapter download status.
 
         Args:
             chapter_id: chapters.id.
-            status: new download_status. 'completed' also stamps downloaded_at
-                (and file_path if given); 'failed' also stores error_message
-                (if given). Other statuses only change the status.
-            file_path: optional, only used with 'completed'.
+            status: new download_status. 'completed' also stamps downloaded_at;
+                'failed' also stores error_message (if given). Other statuses
+                only change the status.
             error_message: optional, only used with 'failed'.
 
         Side effects: UPDATE chapters + commit. Column names in the f-string
@@ -717,9 +714,6 @@ class NovelDatabase:
         
         if status == 'completed':
             update_fields.append("downloaded_at = CURRENT_TIMESTAMP")
-            if file_path:
-                update_fields.append("file_path = ?")
-                params.append(file_path)
         elif status == 'failed':
             if error_message:
                 update_fields.append("error_message = ?")
@@ -737,7 +731,7 @@ class NovelDatabase:
     
     def reset_failed_chapters(self, book_id: int) -> int:
         """Set all 'failed' chapters of a book back to 'pending' so a run can
-        resume them into the main DOCX. Returns how many chapters were reset.
+        resume them. Returns how many chapters were reset.
 
         Args:
             book_id: books.id.

@@ -173,6 +173,32 @@ def check_drop_repeated_title():
     assert drop_repeated_title(title, long_para) == long_para
 
 
+def check_fast_docx_matches_python_docx():
+    """build_book_docx's O(1) paragraph insert gives the same XML as python-docx's
+    own add_paragraph, with the rules applied (corrected text, not the raw one)."""
+    import zipfile
+    from app.services import docx_exporter as dx
+    book = {"id": 0, "title": "T", "author": None, "seo_title_basic": "t", "is_translated": 0}
+    chapters = [{"id": i, "chapter_order": i, "chapter_title": f"Chương {i}: Foo",
+                 "chapter_content": "Foo bar\n\nfoo baz"} for i in (1, 2)]
+    rules = [rule("foo", "Qux")]
+    fast = dx._append_paragraph
+    with tempfile.TemporaryDirectory() as tmp:
+        # The file extension does not matter to python-docx.
+        ref, new = Path(tmp) / "ref.out", Path(tmp) / "new.out"
+        try:
+            # Reference: python-docx's own (slow) add_paragraph.
+            dx._append_paragraph = lambda doc, sect_pr, text, style=None: doc.add_paragraph(text, style)
+            dx.build_book_docx(book, chapters, rules, ref)
+        finally:
+            dx._append_paragraph = fast
+        dx.build_book_docx(book, chapters, rules, new)
+        ref_xml, new_xml = (zipfile.ZipFile(p).read("word/document.xml") for p in (ref, new))
+    assert ref_xml == new_xml
+    text = new_xml.decode("utf-8")
+    assert "Qux bar" in text and "Qux baz" in text and "Foo" not in text
+
+
 if __name__ == "__main__":
     # Run every function whose name starts with "check_" (in definition order).
     checks = [f for name, f in list(globals().items()) if name.startswith("check_")]

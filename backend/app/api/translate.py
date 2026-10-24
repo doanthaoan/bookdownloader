@@ -40,7 +40,6 @@ from app.services.translator import (
     TranslationRunningError,
 )
 from app.config import BACKEND_DIR
-from app.api.books import docx_info, docx_response, get_book_or_404
 
 router = APIRouter()
 db = get_database()
@@ -467,7 +466,7 @@ def run_translation(book_id: int, method: str = "api", max_chapters: int = None)
     Errors: 404 no book, 400 not a translated book, 409 a translation is
     already running for this book.
     Side effects: background thread writes translated_content + statuses to the
-    DB and builds the DOCX; may open Chrome for the "web" method or to refresh
+    DB (no DOCX is built); may open Chrome for the "web" method or to refresh
     Cloudflare cookies.
     """
     book = db.get_book(book_id)
@@ -493,12 +492,11 @@ def run_translation(book_id: int, method: str = "api", max_chapters: int = None)
 
 @router.post("/books/{book_id}/retranslate")
 def run_retranslation(book_id: int, method: str = "api"):
-    """Re-translate failed chapters into a separate _retranslate.docx.
+    """Re-translate failed chapters (translations are stored in the DB).
 
     POST /api/translate/books/{book_id}/retranslate?method=api|web
     Response: ``{"message": str}``. Errors: 404 / 400 / 409 as for /run.
-    Side effects: background thread updates failed chapters in the DB and
-    writes {book_id}_{seo}_retranslate.docx.
+    Side effects: background thread updates failed chapters in the DB.
     """
     # TODO: the 404/400/409 preamble is copy-pasted in /run, /retranslate and
     # /continue; a small _ensure_translatable(book_id) helper would remove it.
@@ -514,14 +512,13 @@ def run_retranslation(book_id: int, method: str = "api"):
         retranslate_book(book_id, method=method, run_async=True)
     except TranslationRunningError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    return {"message": f"Re-translation started for {book['title']}. Output goes to _retranslate.docx."}
+    return {"message": f"Re-translation started for {book['title']}."}
 
 
 @router.post("/books/{book_id}/continue")
 def run_continue(book_id: int, method: str = "api"):
-    """Resume failed chapters into the MAIN DOCX. Use after updating a stale
-    cf_clearance cookie: failed chapters are reset to pending and re-translated,
-    appending to {book_id}_{seo}.docx (not a separate retranslate file).
+    """Resume failed chapters. Use after updating a stale cf_clearance cookie:
+    failed chapters are reset to pending and re-translated.
 
     POST /api/translate/books/{book_id}/continue?method=api|web
     Response: whatever ``continue_book`` returns (message + counts).
@@ -554,28 +551,6 @@ def refresh_cookies():
     saves the new cookies to the ``translate_cookies`` setting.
     """
     return refresh_cookies_manually()
-
-
-@router.get("/books/{book_id}/retranslate-docx-info")
-def retranslate_docx_info(book_id: int):
-    """GET /api/translate/books/{book_id}/retranslate-docx-info -- check if
-    _retranslate.docx exists for a translated book.
-
-    Response: ``{"exists": bool, "file_name": str, "file_path": abs path|None, "size": bytes}``.
-    Errors: 404 if the book does not exist (a missing FILE is ``exists: false``, not 404).
-    """
-    return docx_info(get_book_or_404(book_id), "_retranslate")
-
-
-@router.get("/books/{book_id}/retranslate-docx")
-def retranslate_docx(book_id: int):
-    """GET /api/translate/books/{book_id}/retranslate-docx -- download the _retranslate.docx file.
-
-    Response: the file (``FileResponse`` streams it and sets a download filename).
-    Errors: 404 if the book or the file does not exist.
-    """
-    return docx_response(get_book_or_404(book_id), "_retranslate",
-                         "Retranslate DOCX file not found.")
 
 
 @router.get("/books/{book_id}/progress")

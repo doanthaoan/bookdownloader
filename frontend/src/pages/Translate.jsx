@@ -25,7 +25,6 @@ const Translate = ({ onViewBook }) => {
   const [newCorr, setNewCorr] = useState({ find_text: '', replace_text: '' });
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
-  const [docxInfo, setDocxInfo] = useState(null);
   // useRef holds the interval id across renders without causing re-renders.
   const pollRef = useRef(null);
 
@@ -153,7 +152,7 @@ const Translate = ({ onViewBook }) => {
     }
   };
 
-  /** Create the book + chapters, then load its corrections and DOCX info (3 API calls). */
+  /** Create the book + chapters, then load its corrections (2 API calls). */
   const handleCreateBook = async () => {
     if (!parsed) return;
     try {
@@ -162,8 +161,6 @@ const Translate = ({ onViewBook }) => {
       showMsg(res.data.message, 'success');
       const corr = await translateApi.corrections(res.data.book_id);
       setCorrections(corr.data || []);
-      const di = await bookApi.docxInfo(res.data.book_id);
-      setDocxInfo(di.data);
     } catch (err) {
       showMsg('Create book failed: ' + errMsg(err), 'error');
     }
@@ -216,7 +213,7 @@ const Translate = ({ onViewBook }) => {
   };
 
   /**
-   * One poll tick (API call: progress; when finished also docxInfo + getOne).
+   * One poll tick (API call: progress; when finished also getOne).
    * Note: setInterval keeps calling the copy of this function from the render
    * that started it. That is fine here because it only reads `bookId`, which
    * was already set before translation could start.
@@ -229,8 +226,6 @@ const Translate = ({ onViewBook }) => {
       if (!res.data.active) {
         stopPolling();
         setRunning(false);
-        const di = await bookApi.docxInfo(bookId);
-        setDocxInfo(di.data);
         const book = await bookApi.getOne(bookId);
         setProgress(p => ({ ...p, download_status: book.data.download_status }));
       }
@@ -254,7 +249,7 @@ const Translate = ({ onViewBook }) => {
   /** Reset the wizard to step 1 and stop polling. */
   const resetAll = () => {
     setSelectedFile(''); setParsed(null); setTitle(''); setAuthor('');
-    setBookId(null); setCorrections([]); setProgress(null); setDocxInfo(null);
+    setBookId(null); setCorrections([]); setProgress(null);
     setRunning(false);
     stopPolling();
   };
@@ -439,12 +434,6 @@ const Translate = ({ onViewBook }) => {
                   <span className={`text-xs font-medium px-2 py-1 rounded ${progress.download_status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
                     Status: {progress.download_status}
                   </span>
-                )}
-                {docxInfo?.exists && (
-                  <a href={bookApi.docxUrl(bookId)} target="_blank" rel="noopener noreferrer"
-                    className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm font-medium transition">
-                    Open DOCX
-                  </a>
                 )}
                 {onViewBook && (
                   <button onClick={() => onViewBook(bookId)} className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded text-sm font-medium transition">

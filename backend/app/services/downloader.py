@@ -18,8 +18,9 @@ How a download works (big picture):
    (guest → primary account → extra accounts) and retries the same chapter.
    When every identity is used up it stops ('paused') or waits and starts
    over, depending on the `access_limit_action` setting.
-4. At the end the DOCX is rendered from the DB (if the book's
-   `auto_export_docx` flag is on) and the book status is updated.
+4. At the end the book status is updated. No DOCX is written here: the user
+   reviews/corrects the book first and exports it on demand (Export button →
+   `POST /api/books/{id}/export-corrected`).
 
 The API polls `get_download_progress()` to show live progress in the UI.
 """
@@ -37,12 +38,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from app.config import (COOKIE_KEYS, STATIC_COOKIES, TRUYENWIKI, book_dir,
-                        get_cookies, logs_dir)
+from app.config import (COOKIE_KEYS, STATIC_COOKIES, TRUYENWIKI, get_cookies,
+                        logs_dir)
 from app.database import get_database
 from app.services.browser import inject_site_cookies, load_page, make_driver
-from app.services.docx_exporter import (build_book_docx, build_render_rules,
-                                        collapse_blank_lines)
+from app.services.docx_exporter import collapse_blank_lines
 from app.services.text_cleaner import TextCleaner
 
 # colorama: makes the Fore.* colour codes work in the Windows console.
@@ -215,7 +215,7 @@ def parse_chapter_html(html: str, cleaner: TextCleaner) -> tuple:
 class TruyenWikiDownloader:
     """Downloads the chapters of ONE book. Create one instance per job."""
 
-    def __init__(self, book_id: int, redownload: bool = False):
+    def __init__(self, book_id: int):
         """Load the book, its chapters and the download settings from the DB.
 
         Chrome is NOT started here — it is started inside `_job()` only after
@@ -223,14 +223,11 @@ class TruyenWikiDownloader:
 
         Args:
             book_id: id of the book to download.
-            redownload: True → output goes to `{id}_{seo}_redownload.docx`
-                instead of the main `{id}_{seo}.docx`.
 
         Raises:
             ValueError: if the book does not exist.
         """
         self._cancel_flag = False
-        self._redownload = redownload
 
         self.db = get_database()
         self.cleaner = TextCleaner()
@@ -242,9 +239,6 @@ class TruyenWikiDownloader:
         self.book_id = book_id
         # seo_title_basic is the ASCII slug (e.g. "su-ton-nguoi-mau") used in file names.
         self.book_name = self.book['seo_title_basic']
-        # Per-book flag: render the DOCX automatically after a download finishes.
-        # `bool(x)` turns the SQLite integer 0/1 into False/True.
-        self.auto_export_docx = bool(self.book.get('auto_export_docx', 1))
         self.domain = TRUYENWIKI['book_domain']
         # urlparse("https://wikicv.org").hostname -> "wikicv.org" (used in request logs)
         self.domain_host = urlparse(self.domain).hostname or 'wikicv.org'
@@ -268,10 +262,8 @@ class TruyenWikiDownloader:
         self.delay_min = int(self.db.get_setting('download_delay_min') or '4')
         self.delay_max = int(self.db.get_setting('download_delay_max') or '6')
 
-        # Output paths. book_dir()/logs_dir() return absolute Path objects;
+        # Log paths. logs_dir() returns an absolute Path object;
         # `Path / "name"` joins a file name onto the folder.
-        suffix = "_redownload" if redownload else ""
-        self.output_docx = book_dir() / f"{self.book_id}_{self.book_name}{suffix}.docx"
         self.success_log = logs_dir() / f"{self.book_id}_{self.book_name}_success.txt"
         self.failure_log = logs_dir() / f"{self.book_id}_{self.book_name}_failure.txt"
 
@@ -483,24 +475,6 @@ class TruyenWikiDownloader:
 
         return title_text, full_url
 
-    def _export_docx(self):
-        """Render the book DOCX from DB content (the source of truth).
-
-        Skipped when the book's `auto_export_docx` flag is off. Errors are
-        printed, not raised: a failed export must not hide the download result.
-        """
-        if not self.auto_export_docx:
-            print(f"{Fore.CYAN}Auto DOCX export disabled — skipping export.")
-            return
-        try:
-            # Re-read chapters: their content changed during the batch.
-            chapters = self.db.get_chapters_by_book(self.book_id)
-            rules = build_render_rules(self.db, self.book)
-            build_book_docx(self.book, chapters, rules, self.output_docx)
-            print(f"{Fore.CYAN}--- DOCX exported: {self.output_docx} ---")
-        except Exception as e:
-            print(f"{Fore.RED}DOCX export failed: {e}")
-
     def _process_batch(self, chapters: list, log_tag: str = "") -> tuple:
         """Download a list of chapters one by one (shared by all run modes).
 
@@ -515,67 +489,63 @@ class TruyenWikiDownloader:
         continues with the next one. An access-limit page is NOT a failure:
         the chapter stays as it was, the next identity is used and the SAME
         chapter is retried; when no identity is left, `_wait_for_limit_reset`
-        either waits and starts over, or sets `_limit_reached` and the loop stops. The DOCX is exported in `finally`, so
-        whatever was downloaded is preserved even if the loop crashes.
+        either waits and starts over, or sets `_limit_reached` and the loop stops.
+        Each chapter is saved to the DB as soon as it is downloaded, so a crash
+        mid-loop loses nothing already fetched. No DOCX is written here.
         """
         self._remaining_count = len(chapters)
         self._success_count = self._fail_count = 0  # chained assignment: both become 0
-        docx_label = self.output_docx.name  # `.name` = file name without folder
         cancelled = False
 
-        try:
-            # enumerate(..., 1) yields (1, ch1), (2, ch2), ... — index starts at 1.
-            for index, chapter in enumerate(chapters, 1):
-                self._current_index = index
-                self._current_title = chapter['chapter_title']
+        # enumerate(..., 1) yields (1, ch1), (2, ch2), ... — index starts at 1.
+        for index, chapter in enumerate(chapters, 1):
+            self._current_index = index
+            self._current_title = chapter['chapter_title']
 
-                if self._cancel_flag:
-                    print(f"{Fore.YELLOW}Download cancelled by user.")
-                    cancelled = True
-                    break
+            if self._cancel_flag:
+                print(f"{Fore.YELLOW}Download cancelled by user.")
+                cancelled = True
+                break
 
-                # `while True` retries the same chapter: `continue` = try again
-                # with the new identity, `break` = done with this chapter.
-                while True:
-                    try:
-                        title, full_url = self.process_chapter(chapter)
-                        self.log_event(self.success_log, f"{log_tag}{full_url}")
-                        self.db.update_chapter_status(chapter_id=chapter['id'], status='completed',
-                                                      file_path=docx_label)
-                        self._success_count += 1
-                        print(f"{Fore.GREEN}Success: {Fore.WHITE}{title} ({index}/{len(chapters)})")
-                    except AccessLimitError:
-                        label = self._identities[self._identity_idx]['label']
-                        self.log_event(self.failure_log,
-                                       f"{log_tag}{chapter['chapter_url']} | ACCESS LIMIT ({label})")
-                        print(f"{Fore.YELLOW}Access limit reached for {label}.")
-                        if self._identity_idx + 1 < len(self._identities):
-                            self._use_identity(self._identity_idx + 1)
-                            continue
-                        if self._wait_for_limit_reset():
-                            self._use_identity(0)
-                            continue
-                        # Stop only if the user did not cancel (cancel is handled below).
-                        self._limit_reached = not self._cancel_flag
-                    except Exception as e:
-                        self.log_event(self.failure_log, f"{log_tag}{chapter['chapter_url']} | Error: {e}")
-                        self.db.update_chapter_status(chapter_id=chapter['id'], status='failed',
-                                                      error_message=str(e))
-                        self._fail_count += 1
-                        print(f"{Fore.RED}Failed: {chapter['chapter_title']} | Error: {e}")
-                    break
+            # `while True` retries the same chapter: `continue` = try again
+            # with the new identity, `break` = done with this chapter.
+            while True:
+                try:
+                    title, full_url = self.process_chapter(chapter)
+                    self.log_event(self.success_log, f"{log_tag}{full_url}")
+                    self.db.update_chapter_status(chapter_id=chapter['id'], status='completed')
+                    self._success_count += 1
+                    print(f"{Fore.GREEN}Success: {Fore.WHITE}{title} ({index}/{len(chapters)})")
+                except AccessLimitError:
+                    label = self._identities[self._identity_idx]['label']
+                    self.log_event(self.failure_log,
+                                   f"{log_tag}{chapter['chapter_url']} | ACCESS LIMIT ({label})")
+                    print(f"{Fore.YELLOW}Access limit reached for {label}.")
+                    if self._identity_idx + 1 < len(self._identities):
+                        self._use_identity(self._identity_idx + 1)
+                        continue
+                    if self._wait_for_limit_reset():
+                        self._use_identity(0)
+                        continue
+                    # Stop only if the user did not cancel (cancel is handled below).
+                    self._limit_reached = not self._cancel_flag
+                except Exception as e:
+                    self.log_event(self.failure_log, f"{log_tag}{chapter['chapter_url']} | Error: {e}")
+                    self.db.update_chapter_status(chapter_id=chapter['id'], status='failed',
+                                                  error_message=str(e))
+                    self._fail_count += 1
+                    print(f"{Fore.RED}Failed: {chapter['chapter_title']} | Error: {e}")
+                break
 
-                if self._limit_reached:
-                    print(f"{Fore.YELLOW}Every access identity is limited — stopping.")
-                    self.log_event(self.success_log, f"{log_tag}ACCESS LIMIT REACHED — stopped")
-                    break
+            if self._limit_reached:
+                print(f"{Fore.YELLOW}Every access identity is limited — stopping.")
+                self.log_event(self.success_log, f"{log_tag}ACCESS LIMIT REACHED — stopped")
+                break
 
-                # Be gentle with the server; no pause after the last chapter.
-                if index < len(chapters):
-                    # `*BETWEEN_CHAPTER_PAUSE` unpacks the tuple into two arguments.
-                    time.sleep(random.randint(*BETWEEN_CHAPTER_PAUSE))
-        finally:
-            self._export_docx()
+            # Be gentle with the server; no pause after the last chapter.
+            if index < len(chapters):
+                # `*BETWEEN_CHAPTER_PAUSE` unpacks the tuple into two arguments.
+                time.sleep(random.randint(*BETWEEN_CHAPTER_PAUSE))
 
         # `or self._cancel_flag`: a cancel during the limit wait on the LAST
         # chapter never reaches the check at the top of the loop.
@@ -610,7 +580,7 @@ class TruyenWikiDownloader:
     # ------------------------------------------------------------------
 
     def run(self, max_chapters: int = None):
-        """Download all PENDING chapters into the main DOCX.
+        """Download all PENDING chapters into the DB.
 
         Args:
             max_chapters: process at most this many chapters in this session
@@ -656,7 +626,7 @@ class TruyenWikiDownloader:
 
     def run_redownload(self, all_chapters: bool = False, count: int = None,
                        start_order: int = None, end_order: int = None):
-        """Re-download chapters into the separate `_redownload.docx`.
+        """Re-download chapters, overwriting their stored content in the DB.
 
         Selection (first match wins):
             count=N           → the first N chapters (by order)
@@ -691,7 +661,7 @@ class TruyenWikiDownloader:
             print(f"{Fore.GREEN}No {label} chapters to re-download.")
             return
 
-        print(f"{Fore.YELLOW}Re-downloading {len(chapters_to_process)} {label} chapter(s) into {self.output_docx}")
+        print(f"{Fore.YELLOW}Re-downloading {len(chapters_to_process)} {label} chapter(s) of '{self.book_name}'")
         with self._job():
             # Remember the status so a partial re-download doesn't mislabel the book.
             pre_status = self.book.get('download_status')
@@ -710,7 +680,7 @@ class TruyenWikiDownloader:
             self._finish(new_status, started, len(chapters_to_process))
 
     def run_single(self, chapter_id: int):
-        """Download one chapter (from the chapter table's ⬇ button) into `_redownload.docx`.
+        """Download one chapter (from the chapter table's ⬇ button) into the DB.
 
         The book's download_status is left unchanged; only the downloaded count is refreshed.
         """
@@ -738,7 +708,6 @@ class TruyenWikiDownloader:
         print(f"{Fore.RED}Failed: {fail}/{total}")
         print(f"{Fore.CYAN}Duration: {duration:.2f} s")  # :.2f = 2 decimal places
         print(f"{Fore.YELLOW}Book: {self.book_name}")
-        print(f"{Fore.BLUE}DOCX file: {self.output_docx}")
 
 
 # ---------------------------------------------------------------------------
@@ -753,11 +722,11 @@ def download_book(book_id: int, max_chapters: int = None):
 def redownload_book(book_id: int, all_chapters: bool = False,
                     count: int = None, start_order: int = None,
                     end_order: int = None):
-    """Re-download chapters into _redownload.docx (see run_redownload for the selection rules)."""
-    TruyenWikiDownloader(book_id, redownload=True).run_redownload(
+    """Re-download chapters into the DB (see run_redownload for the selection rules)."""
+    TruyenWikiDownloader(book_id).run_redownload(
         all_chapters=all_chapters, count=count, start_order=start_order, end_order=end_order)
 
 
 def download_single_chapter(book_id: int, chapter_id: int):
-    """Download one chapter into _redownload.docx."""
-    TruyenWikiDownloader(book_id, redownload=True).run_single(chapter_id)
+    """Download one chapter into the DB."""
+    TruyenWikiDownloader(book_id).run_single(chapter_id)

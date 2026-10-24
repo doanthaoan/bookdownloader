@@ -29,8 +29,6 @@ const BookDetails = ({ bookId, onBack }) => {
   const [progress, setProgress] = useState(null);
   const [tags, setTags] = useState([]);
   const [corrections, setCorrections] = useState([]);
-  const [redownloadDocxExists, setRedownloadDocxExists] = useState(false);
-  const [retranslateDocxExists, setRetranslateDocxExists] = useState(false);
   const [correctedDocxExists, setCorrectedDocxExists] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [preview, setPreview] = useState(null);
@@ -65,19 +63,10 @@ const BookDetails = ({ bookId, onBack }) => {
       setCorrections(correctionsRes.data || []);
       setCorrectedDocxExists(correctedRes.data.exists);
 
-      let p;
-      if (isTranslated(bookRes.data)) {
-        const [tp, rt] = await Promise.all([
-          translateApi.progress(bookId).catch(() => ({ data: { active: false } })),
-          translateApi.retranslateDocxInfo(bookId).catch(() => ({ data: { exists: false } })),
-        ]);
-        setRetranslateDocxExists(rt.data.exists);
-        p = tp.data;
-      } else {
-        const rdInfoRes = await bookApi.redownloadDocxInfo(bookId).catch(() => ({ data: { exists: false } }));
-        setRedownloadDocxExists(rdInfoRes.data.exists);
-        p = progressRes.data;
-      }
+      // Translated books report progress from the translate job tracker.
+      const p = isTranslated(bookRes.data)
+        ? (await translateApi.progress(bookId).catch(() => ({ data: { active: false } }))).data
+        : progressRes.data;
       setProgress(p);
       applyProgress(p);
     } catch (err) {
@@ -174,9 +163,6 @@ const BookDetails = ({ bookId, onBack }) => {
     <DocxLinks
       bookId={bookId}
       hasContent={completedChapters > 0}
-      extraDocx={translated
-        ? (retranslateDocxExists ? { url: translateApi.retranslateDocxUrl(bookId), label: 'Open Re-translate DOCX' } : null)
-        : (redownloadDocxExists ? { url: bookApi.redownloadDocxUrl(bookId), label: 'Open Redownload DOCX' } : null)}
       correctedDocxExists={correctedDocxExists}
       exporting={exporting}
       onExportCorrected={handleExportCorrected}

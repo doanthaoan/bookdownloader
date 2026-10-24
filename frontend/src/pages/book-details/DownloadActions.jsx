@@ -78,7 +78,7 @@ const DownloadActions = ({ book, downloading, isCompleted, failedCount, totalCha
     }
     runRedownload(
       { start_order: from, end_order: to },
-      `Re-download chapters ${from} to ${to}? Content goes to _redownload.docx.`,
+      `Re-download chapters ${from} to ${to}? Their stored content will be replaced.`,
     );
   };
 
@@ -160,7 +160,7 @@ const DownloadActions = ({ book, downloading, isCompleted, failedCount, totalCha
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider w-30 flex-shrink-0">Re-download</span>
         {!isCompleted && (
           <button
-            onClick={() => runRedownload({ all_chapters: false }, 'Re-download failed chapters? Content goes to _redownload.docx.')}
+            onClick={() => runRedownload({ all_chapters: false }, 'Re-download failed chapters?')}
             disabled={failedCount === 0}
             className={`bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 ${BTN}`}>
             Re-download ({failedCount} failed)
@@ -188,7 +188,7 @@ const DownloadActions = ({ book, downloading, isCompleted, failedCount, totalCha
         <button
           onClick={() => runRedownload(
             { all_chapters: true },
-            'Re-download ALL chapters? This will fetch every chapter into _redownload.docx.',
+            'Re-download ALL chapters? The stored content of every chapter will be replaced.',
             'Re-download all',
           )}
           className={`bg-purple-600 hover:bg-purple-700 ${BTN}`}>
