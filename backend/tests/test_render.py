@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services.docx_exporter import (apply_paragraphs, apply_rules,  # noqa: E402
                                         collapse_blank_lines, diff_rules)
-from app.services.downloader import parse_chapter_html  # noqa: E402
+from app.services.downloader import AccessLimitError, parse_chapter_html  # noqa: E402
 from app.services.translator import Translator, TranslateTask, parse_raw_file  # noqa: E402
 
 
@@ -90,6 +90,20 @@ def check_chapter_parser():
         raise AssertionError("expected ValueError for a page without content")
     except ValueError:
         pass
+    # Content div with no text paragraphs → "Empty content" error, not an empty save.
+    try:
+        parse_chapter_html('<div class="content-body-wrapper"><p> </p></div>', _NoCleaning())
+        raise AssertionError("expected ValueError for empty content")
+    except ValueError as e:
+        assert "Empty content" in str(e)
+    # Access-limit notice (inside or instead of the content div) → AccessLimitError.
+    limit_div = '<div style="margin-top: 2rem; text-align: center">Đã hết lượt truy cập.</div>'
+    for page in (limit_div, f'<div class="content-body-wrapper">{limit_div}</div>'):
+        try:
+            parse_chapter_html(page, _NoCleaning())
+            raise AssertionError("expected AccessLimitError")
+        except AccessLimitError:
+            pass
 
 
 def check_raw_parser():

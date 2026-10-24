@@ -306,6 +306,19 @@ class NovelDatabase:
         except Exception as e:
             logger.debug(f"text_cleaning_rules creation skipped: {e}")
 
+        # Extra site accounts used by the downloader when the site's access limit
+        # is reached (guest → primary cookie_* settings → these, in id order).
+        # `cookies` is a JSON object {name: value} filled by auto-login.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS site_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL DEFAULT '',
+                cookies TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Seed defaults if table is empty (so deleting all rules on purpose
         # brings the defaults back on the next restart).
         # fetchone()[0] = first column of the single result row.
@@ -787,6 +800,45 @@ class NovelDatabase:
         """, (key, value))
         conn.commit()
     
+    # === SITE ACCOUNT OPERATIONS ===
+
+    def get_site_accounts(self) -> List[Dict]:
+        """List the extra site accounts, oldest first (= fallback order).
+
+        Returns:
+            list of dicts with id, username, password, cookies (JSON text), created_at.
+        """
+        conn = self._get_connection()
+        # dict(row) works because _get_connection() sets row_factory = sqlite3.Row.
+        return [dict(r) for r in conn.execute("SELECT * FROM site_accounts ORDER BY id")]
+
+    def add_site_account(self, username: str, password: str) -> int:
+        """Insert an extra site account (no cookies until it is logged in).
+
+        Returns: the new row id. Side effects: INSERT + commit.
+        """
+        conn = self._get_connection()
+        cur = conn.execute("INSERT INTO site_accounts (username, password) VALUES (?, ?)",
+                           (username, password))
+        conn.commit()
+        return cur.lastrowid
+
+    def set_site_account_cookies(self, account_id: int, cookies_json: str):
+        """Store the cookies (JSON text) harvested by auto-login for one account.
+
+        Side effects: UPDATE + commit.
+        """
+        conn = self._get_connection()
+        conn.execute("UPDATE site_accounts SET cookies = ? WHERE id = ?", (cookies_json, account_id))
+        conn.commit()
+
+    def delete_site_account(self, account_id: int) -> bool:
+        """Delete one extra site account. Returns True if a row was deleted."""
+        conn = self._get_connection()
+        cur = conn.execute("DELETE FROM site_accounts WHERE id = ?", (account_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
     # === TAG OPERATIONS ===
 
     def add_tag(self, name: str) -> int:

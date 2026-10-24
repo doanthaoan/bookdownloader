@@ -190,7 +190,111 @@ const SettingRow = ({ settingKey, label, type, description, value, onSave, layou
 };
 
 /**
- * Settings page: auto-login, cookies, site paths, download/browser/translate/
+ * Extra site accounts: fallbacks the downloader switches to when the site says
+ * "Đã hết lượt truy cập" (order: guest → primary account → these, oldest first).
+ * Self-contained: loads its own list and talks to the /settings/accounts endpoints.
+ */
+const ExtraAccounts = () => {
+  const [accounts, setAccounts] = useState([]);
+  const [form, setForm] = useState({ username: '', password: '' });
+  // id of the account being logged in (or 'add'), so only that button shows "Processing...".
+  const [busy, setBusy] = useState(null);
+  const [message, setMessage] = useState('');
+
+  /** Fetch the account list (API call: listAccounts). */
+  const load = async () => {
+    try {
+      setAccounts((await settingsApi.listAccounts()).data);
+    } catch (err) {
+      setMessage('Failed to load accounts: ' + errMsg(err));
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  /** Run one API call with a busy marker + message, then reload the list. */
+  const run = async (key, call) => {
+    setBusy(key);
+    setMessage('');
+    try {
+      const res = await call();
+      setMessage(res.data?.message || 'Done.');
+      await load();
+      return true;
+    } catch (err) {
+      setMessage('Error: ' + errMsg(err));
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Add the account, then log it in right away so it has cookies. */
+  const handleAdd = async (e) => {
+    e.preventDefault();
+    let id;
+    const ok = await run('add', async () => {
+      const res = await settingsApi.addAccount(form.username, form.password);
+      id = res.data.id;
+      return { data: { message: 'Account added.' } };
+    });
+    if (ok) {
+      setForm({ username: '', password: '' });
+      await run(id, () => settingsApi.loginAccount(id));
+    }
+  };
+
+  return (
+    <section className="bg-white rounded-lg shadow p-6">
+      <h2 className="text-lg font-semibold border-b pb-3 mb-4">Extra Accounts</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        When the site's access limit is reached, downloads switch identity and retry the same
+        chapter: <b>guest</b> first, then the <b>primary account</b> (Auto-Login / Cookies above),
+        then these accounts from top to bottom. An account is only used after a successful login
+        (cookies &gt; 0). Use <b>Login</b> again when an account's cookies expire.
+      </p>
+      <form onSubmit={handleAdd} className="flex flex-col sm:flex-row gap-3 items-end mb-4">
+        <input type="text" placeholder="Username / Email" className="flex-1 w-full p-2 border rounded-md"
+          value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} />
+        <input type="password" placeholder="Password" className="flex-1 w-full p-2 border rounded-md"
+          value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} />
+        <button type="submit" disabled={busy !== null || !form.username || !form.password}
+          className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white px-5 py-2 rounded-md transition w-full sm:w-auto">
+          {busy === 'add' ? 'Processing...' : 'Add & Login'}
+        </button>
+      </form>
+      {accounts.length > 0 ? (
+        <div className="space-y-2">
+          {accounts.map(a => (
+            <div key={a.id} className="flex items-center gap-3 p-2 border rounded-md">
+              <span className={`inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 ${a.cookie_count ? 'bg-green-400' : 'bg-red-400'}`}
+                title={a.cookie_count ? 'Logged in' : 'No cookies — not used'} />
+              <span className="flex-1 text-sm font-medium text-gray-700 truncate">{a.username}</span>
+              <span className="text-xs text-gray-400">{a.cookie_count} cookies</span>
+              <button onClick={() => run(a.id, () => settingsApi.loginAccount(a.id))} disabled={busy !== null}
+                className="text-sm px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white">
+                {busy === a.id ? 'Processing...' : 'Login'}
+              </button>
+              <button disabled={busy !== null}
+                onClick={() => window.confirm(`Delete account ${a.username}?`) && run(a.id, () => settingsApi.deleteAccount(a.id))}
+                className="text-sm px-3 py-1 rounded bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white">
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-gray-400 text-sm">No extra accounts.</p>
+      )}
+      {message && (
+        <div className="mt-3 p-3 bg-blue-50 text-blue-700 rounded border border-blue-200 text-sm">{message}</div>
+      )}
+    </section>
+  );
+};
+
+/**
+ * Settings page: auto-login, cookies, extra accounts, site paths, download/browser/translate/
  * request settings. Most fields save on blur via SettingRow/SettingInput.
  */
 const Settings = () => {
@@ -418,6 +522,8 @@ const Settings = () => {
           )}
         </section>
 
+        <ExtraAccounts />
+
         {/* Site Configuration Section (explicit Save button, edits kept in siteEdits) */}
         <section className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold border-b pb-3 mb-4">Site Configuration</h2>
@@ -519,28 +625,33 @@ const Settings = () => {
         <section className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold border-b pb-3 mb-4">Request Settings</h2>
           <p className="text-sm text-gray-500 mb-4">
-            Choose how chapter downloads access the site. <b>Session</b> injects your login
-            cookies; <b>Non-session</b> downloads as a free/guest visitor (no cookies). The
-            site keeps separate daily request quotas per access type, so you can mix both to
-            get more chapter requests per day. The daily limits below power the alert colors
+            Chapter downloads start as a free/guest visitor (<b>non_session</b>) and switch to your
+            accounts (<b>session</b>) when the site's access limit is reached (see Extra Accounts).
+            <code> access_limit_action</code> decides what happens when every account is limited:
+            <b> stop</b> pauses the book (Download resumes later), <b>wait</b> sleeps
+            <code> access_limit_wait_minutes</code> and starts over from guest (Cancel stops it).
+            The daily limits below power the alert colors
             and "remaining today" counter on the Statistics page (0 = no limit configured).
             Use the estimator on the Statistics page to derive limits from your own history.
-            The mode saves immediately; limits save when you leave the field.
+            The action saves immediately; numbers save when you leave the field.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="flex flex-col gap-1.5 p-3 border rounded-md">
-              <span className="text-sm font-medium text-gray-700">request_session_mode</span>
+              <span className="text-sm font-medium text-gray-700">access_limit_action</span>
               {/* A select change is one discrete event, so saving on change is fine here. */}
               <select
                 className="border rounded px-2 py-1.5 text-sm w-full"
-                value={getSetting('request_session_mode') || 'session'}
-                onChange={e => handleSettingChange('request_session_mode', e.target.value)}
+                value={getSetting('access_limit_action') || 'stop'}
+                onChange={e => handleSettingChange('access_limit_action', e.target.value)}
               >
-                <option value="session">session (logged-in cookies)</option>
-                <option value="non_session">non_session (free, no cookies)</option>
+                <option value="stop">stop (pause the book)</option>
+                <option value="wait">wait N minutes, then retry</option>
               </select>
-              <p className="text-xs text-gray-400">Applies to chapter downloads (and the resulting DOCX exports).</p>
+              <p className="text-xs text-gray-400">When every identity has hit the access limit.</p>
             </div>
+            <SettingRow layout="card" settingKey="access_limit_wait_minutes" type="number" min="1"
+              description="Minutes to wait before retrying (wait mode)."
+              value={getSetting('access_limit_wait_minutes') || '60'} onSave={handleSettingChange} />
             {LIMIT_KEYS.map(key => (
               <SettingRow key={key} layout="card" settingKey={key} type="number" min="0"
                 description={dbDescription(key)}

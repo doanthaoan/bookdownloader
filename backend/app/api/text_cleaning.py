@@ -26,7 +26,7 @@ from docx import Document
 from app.database import get_database
 from app.config import TRUYENWIKI, book_dir
 from app.services.browser import inject_site_cookies, load_page, make_driver
-from app.services.downloader import parse_chapter_html
+from app.services.downloader import AccessLimitError, parse_chapter_html
 from app.services.text_cleaner import TextCleaner
 
 router = APIRouter()
@@ -151,7 +151,7 @@ def test_cleaning(chapter_url: str):
 
         try:
             title, body = parse_chapter_html(driver.page_source, TextCleaner())
-        except ValueError as e:  # the page has no chapter content
+        except (ValueError, AccessLimitError) as e:  # no chapter content, or access limit page
             raise HTTPException(status_code=500, detail=str(e))
 
         # One DOCX paragraph per stored paragraph (stored paragraphs are separated by a blank line).

@@ -71,7 +71,7 @@ Do these after Phase 1. Each one deletes more code than it adds.
 
 Near-term, building on what exists:
 - [ ] **M** **Enforce the daily chapter limits.** Today `chapter_limit_session/nonsession` are only displayed. The downloader should stop (book → `paused`) when today's count for its `session_type` reaches the limit, with a clear message.
-- [ ] **S** **Auto-switch access mode** when the session quota is exhausted (opt-in setting). This depends on the item above.
+- [x] **S** **Auto-switch access mode** when the session quota is exhausted (opt-in setting). This depends on the item above.
 - [ ] **M** **Hash-based routing** (`#/book/12`, `#/?tag=x`) in `App.jsx` without a router dependency, so refresh keeps the page and tag links work.
 - [ ] **S** **Book notes.** The `books.notes` column exists but isn't shown. Add a textarea in Edit Info (e.g. for series/family-tree notes).
 - [ ] **S** **Batch "Update & Download"** from the Updates page for all books with new chapters, run sequentially (one Chrome at a time).

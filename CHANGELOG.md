@@ -12,6 +12,24 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.6.0] — 2026-10-21
+
+### Added
+
+- **Automatic account switching on the access limit.** When a chapter page shows "Đã hết lượt truy cập", the download no longer marks it as failed and moves on. It switches to the next identity and retries the same chapter. The order is guest → primary account → extra accounts. The Book Details progress line shows which identity is in use (`_build_identities`, `_use_identity`, `AccessLimitError`).
+- **Extra Accounts on the Settings page.** You can add, log in and delete fallback accounts. Their cookies are stored in a new `site_accounts` table (endpoints: `GET/POST /api/settings/accounts`, `DELETE /api/settings/accounts/{id}`, `POST /api/settings/accounts/{id}/login`).
+- **Choose what happens when every identity is limited.** `access_limit_action` = `stop` (default) sets the book to `paused`, and the chapters that were not downloaded stay pending. `wait` sleeps `access_limit_wait_minutes` (default 60), then starts over from guest. Cancel works during the wait.
+- **`limited` request status.** Access-limit hits are logged separately in Statistics. Until now they counted as failures.
+
+### Changed
+
+- **The `request_session_mode` setting was removed from the UI.** Downloads always start as guest and switch to accounts automatically.
+
+### Fixed
+
+- **Empty chapters are no longer saved as completed.** A chapter page without any text is marked `failed` with the note "Empty content…", so it shows up for Re-download (`parse_chapter_html`).
+- **The limit page no longer waits for the page-load timeout.** The chapter wait stops when either the content or the limit notice appears.
+
 ## [1.5.0] — 2026-10-19
 
 ### Added

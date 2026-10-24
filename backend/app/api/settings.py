@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 from app.database import get_database
 from app.config import TRUYENWIKI, COOKIE_KEYS, get_cookies, load_truyenwiki_config
 from app.services.login import auto_login
+import json
 from typing import Dict
 
 router = APIRouter()
@@ -171,3 +172,64 @@ def update_login_config(login_url: str = None, login_domain: str = None, trigger
     if trigger_selector:
         db.update_setting("login_trigger_selector", trigger_selector)
     return {"message": "Login configuration updated successfully."}
+
+
+# ---------------------------------------------------------------------------
+# Extra site accounts (fallbacks when the site's access limit is reached)
+# ---------------------------------------------------------------------------
+
+@router.get("/accounts")
+def list_accounts():
+    """GET /api/settings/accounts -- list the extra site accounts.
+
+    Response: ``[{"id", "username", "cookie_count", "created_at"}, ...]``.
+    Passwords and cookie values are NOT returned (only how many cookies are
+    stored, so the UI can show whether the account is logged in).
+    """
+    return [
+        {"id": a["id"], "username": a["username"], "created_at": a["created_at"],
+         # json.loads(...) parses the stored JSON text back into a dict.
+         "cookie_count": len(json.loads(a["cookies"] or "{}"))}
+        for a in db.get_site_accounts()
+    ]
+
+
+@router.post("/accounts")
+def add_account(account: Dict[str, str]):
+    """POST /api/settings/accounts -- add an extra account (not logged in yet).
+
+    Body (JSON): ``{"username": "...", "password": "..."}`` — a JSON body, so
+    the password does not end up in the URL / access logs.
+    Errors: 400 if username or password is missing.
+    Side effect: INSERT into site_accounts.
+    """
+    username = (account.get("username") or "").strip()
+    password = account.get("password") or ""
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password are required.")
+    # TODO: the password is stored in plaintext, like account_password (PLAN.md Phase 3).
+    return {"id": db.add_site_account(username, password)}
+
+
+@router.delete("/accounts/{account_id}")
+def delete_account(account_id: int):
+    """DELETE /api/settings/accounts/{id} -- remove an extra account. 404 if missing."""
+    if not db.delete_site_account(account_id):
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return {"message": "Account deleted."}
+
+
+@router.post("/accounts/{account_id}/login")
+def login_account(account_id: int):
+    """POST /api/settings/accounts/{id}/login -- auto-login with the stored credentials.
+
+    Response: the result dict from ``auto_login``.
+    Side effects: OPENS CHROME (blocks this request for the whole login flow),
+    writes the harvested cookies into ``site_accounts.cookies``.
+    Errors: 404 if the account does not exist.
+    """
+    # next(generator, None) = first matching row, or None.
+    account = next((a for a in db.get_site_accounts() if a["id"] == account_id), None)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return auto_login(account["username"], account["password"], account_id=account_id)

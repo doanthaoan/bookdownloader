@@ -81,6 +81,11 @@ export const settingsApi = {
   updateSetting: (key, value) => api.put('/settings/update-setting', null, { params: { key, value } }),
   updateTruyenWiki: (config) => api.put('/settings/update-truyenwiki', null, { params: config }),
   autoLogin: (username, password) => api.post('/settings/auto-login', null, { params: { username, password } }),
+  // Extra site accounts (fallbacks when the access limit is reached). Credentials go in the JSON body.
+  listAccounts: () => api.get('/settings/accounts'),
+  addAccount: (username, password) => api.post('/settings/accounts', { username, password }),
+  deleteAccount: (id) => api.delete(`/settings/accounts/${id}`),
+  loginAccount: (id) => api.post(`/settings/accounts/${id}/login`),
 };
 
 /** Log file listing / reading. */

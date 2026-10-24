@@ -7,18 +7,24 @@ How a download works (big picture):
 2. A run method (`run`, `run_redownload`, `run_single`) picks the chapters to
    fetch, then enters `_job()`, which:
      - registers the downloader in `_active_downloads` (one job per book),
-     - opens Chrome and injects the login cookies,
+     - opens Chrome and starts with the first access identity (guest),
      - ALWAYS closes Chrome and unregisters at the end, even on errors.
 3. `_process_batch()` loops over the chapters. For each one,
    `process_chapter()` loads the page, applies the GLOBAL text-cleaning rules
    and saves title + body to the `chapters` table (the DB is the source of
    truth; see docx_exporter.py).
+   When the site answers "Đã hết lượt truy cập" (access limit reached), the
+   chapter is NOT marked failed: the job switches to the next identity
+   (guest → primary account → extra accounts) and retries the same chapter.
+   When every identity is used up it stops ('paused') or waits and starts
+   over, depending on the `access_limit_action` setting.
 4. At the end the DOCX is rendered from the DB (if the book's
    `auto_export_docx` flag is on) and the book status is updated.
 
 The API polls `get_download_progress()` to show live progress in the UI.
 """
 
+import json
 import random
 import threading
 import time
@@ -31,7 +37,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from app.config import TRUYENWIKI, book_dir, logs_dir
+from app.config import (COOKIE_KEYS, STATIC_COOKIES, TRUYENWIKI, book_dir,
+                        get_cookies, logs_dir)
 from app.database import get_database
 from app.services.browser import inject_site_cookies, load_page, make_driver
 from app.services.docx_exporter import (build_book_docx, build_render_rules,
@@ -48,6 +55,19 @@ init(autoreset=True)
 # with the site protects the account from rate limits).
 # TODO: make this a setting (e.g. `download_pause_min/max`) if you want to tune it from the UI.
 BETWEEN_CHAPTER_PAUSE = (2, 4)
+
+# Text the site shows instead of the chapter when the current identity (guest
+# or account) has used up its access quota:
+#   <div style="margin-top: 2rem; text-align: center">Đã hết lượt truy cập.</div>
+ACCESS_LIMIT_MARKER = "Đã hết lượt truy cập"
+
+
+class AccessLimitError(Exception):
+    """The site refused the chapter because the access quota is used up.
+
+    Deliberately NOT a ValueError: callers treat it as "switch identity and
+    retry", not as "this chapter is broken".
+    """
 
 # ---------------------------------------------------------------------------
 # Active-download registry
@@ -129,6 +149,10 @@ def get_download_progress(book_id: int) -> dict | None:
         "total": dl._remaining_count,
         "current_index": dl._current_index,
         "current_title": dl._current_title,
+        # Which identity is downloading now ('guest', 'primary account', username).
+        "identity": dl._identities[dl._identity_idx]['label'] if dl._identities else '',
+        # Seconds left while waiting for the access quota to reset, else 0.
+        "wait_seconds": max(0, int(dl._waiting_until - time.time())) if dl._waiting_until else 0,
     }
 
 
@@ -149,9 +173,15 @@ def parse_chapter_html(html: str, cleaner: TextCleaner) -> tuple:
         line ("\\n\\n"), the storage format for downloaded books.
 
     Raises:
-        ValueError: if the page has no chapter content div.
+        AccessLimitError: if the page is the site's "access limit reached" notice.
+        ValueError: if the page has no chapter content div, or it holds no text.
     """
     soup = BeautifulSoup(html, 'html.parser')
+
+    # Checked first: the notice may replace the content div or sit inside it.
+    # `string=lambda ...` makes find() match a <div> whose own text contains the marker.
+    if soup.find('div', string=lambda t: t and ACCESS_LIMIT_MARKER in t):
+        raise AccessLimitError(f"Access limit reached ({ACCESS_LIMIT_MARKER}).")
 
     content_tag = soup.find('div', {'class': 'content-body-wrapper'})
     if not content_tag:
@@ -173,6 +203,10 @@ def parse_chapter_html(html: str, cleaner: TextCleaner) -> tuple:
         for p in content_tag.find_all('p')
         if p.get_text().strip()
     ]
+    if not cleaned_paragraphs:
+        # Saving "" would mark the chapter completed with no text; fail it instead
+        # so it shows up for Re-download (the message becomes its error note).
+        raise ValueError("Empty content: the chapter page has no text paragraphs.")
     # Collapse blank-line runs so stored content never has several empty lines.
     body_text = collapse_blank_lines("\n\n".join(cleaned_paragraphs))
     return title_text, body_text
@@ -214,10 +248,20 @@ class TruyenWikiDownloader:
         self.domain = TRUYENWIKI['book_domain']
         # urlparse("https://wikicv.org").hostname -> "wikicv.org" (used in request logs)
         self.domain_host = urlparse(self.domain).hostname or 'wikicv.org'
-        # Access mode: 'session' (inject login cookies) or 'non_session' (free,
-        # no cookies — the site keeps a separate request quota per access type).
+        # Access identities, tried in order when the site's access limit is hit:
+        # guest first, then the primary account, then the extra accounts.
+        # Built in _start_browser(); session_type follows the identity in use
+        # ('non_session' = guest, 'session' = an account) for the request logs.
+        self._identities = []
+        self._identity_idx = 0
+        self.session_type = 'non_session'
+        # What to do when every identity is limited: 'stop' (book → paused) or
+        # 'wait' (sleep N minutes, then start over from guest).
         # `(a or 'x').strip() or 'x'` = use the default when the setting is missing OR blank.
-        self.session_type = (self.db.get_setting('request_session_mode') or 'session').strip() or 'session'
+        self.limit_action = (self.db.get_setting('access_limit_action') or 'stop').strip() or 'stop'
+        self.limit_wait_minutes = int(self.db.get_setting('access_limit_wait_minutes') or '60')
+        self._limit_reached = False   # True once every identity is used up and we stop
+        self._waiting_until = None    # epoch seconds while waiting for the quota to reset
 
         # Timing settings (strings in the DB → converted to int).
         self.page_load_timeout = int(self.db.get_setting('page_load_timeout') or '15')
@@ -252,17 +296,71 @@ class TruyenWikiDownloader:
     # ------------------------------------------------------------------
 
     def _start_browser(self):
-        """Open Chrome (browser.make_driver) and, in session mode, log in with cookies.
-
-        In non-session mode cookies are skipped, so chapter requests count
-        against the site's free/guest quota instead of the logged-in account's.
-        """
+        """Open Chrome (browser.make_driver) and start with the first identity (guest)."""
         self.driver = make_driver()
-        if self.session_type == "non_session":
-            print(f"{Fore.CYAN}Non-session mode — skipping cookie injection (free access).")
-            return
-        print(f"{Fore.CYAN}Injecting cookies...")
-        inject_site_cookies(self.driver)
+        self._identities = self._build_identities()
+        self._use_identity(0)
+
+    def _build_identities(self) -> list:
+        """List the access identities in fallback order: guest, primary, extras.
+
+        Returns:
+            list of dicts {'label', 'session_type', 'cookies'}; cookies is None
+            for guest, else the {name: value} dict to inject.
+
+        An account without login cookies (never logged in) is skipped.
+        """
+        identities = [{'label': 'guest', 'session_type': 'non_session', 'cookies': None}]
+        # get_cookies() always contains STATIC_COOKIES, so look for a real login cookie.
+        primary = get_cookies()
+        if any(primary.get(k) for k in COOKIE_KEYS):
+            identities.append({'label': 'primary account', 'session_type': 'session', 'cookies': primary})
+        for acc in self.db.get_site_accounts():
+            cookies = json.loads(acc['cookies'] or '{}')
+            if cookies:
+                # `{**a, **b}` merges two dicts; b (static cookies) wins on duplicates,
+                # matching get_cookies().
+                identities.append({'label': acc['username'], 'session_type': 'session',
+                                   'cookies': {**cookies, **STATIC_COOKIES}})
+        return identities
+
+    def _use_identity(self, idx: int):
+        """Switch the browser to identity number `idx` (no Chrome restart).
+
+        Side effects: deletes the browser's cookies for the current site, then
+        (for an account) loads the home page and injects that account's cookies.
+        """
+        ident = self._identities[idx]
+        self._identity_idx = idx
+        self.session_type = ident['session_type']
+        try:
+            self.driver.delete_all_cookies()
+        except Exception:  # fresh browser on a blank page: nothing to delete
+            pass
+        if ident['cookies']:
+            inject_site_cookies(self.driver, ident['cookies'])
+        print(f"{Fore.CYAN}Access identity: {ident['label']} ({idx + 1}/{len(self._identities)})")
+
+    def _wait_for_limit_reset(self) -> bool:
+        """Called when every identity is limited. Wait if the settings say so.
+
+        Returns:
+            True after waiting `access_limit_wait_minutes` (the caller starts
+            over from guest); False when the action is 'stop' or the user
+            cancelled during the wait.
+
+        Sleeps in 1-second steps so Cancel takes effect quickly.
+        """
+        if self.limit_action != 'wait':
+            return False
+        self._waiting_until = time.time() + self.limit_wait_minutes * 60
+        print(f"{Fore.YELLOW}All identities limited — waiting {self.limit_wait_minutes} min before retrying.")
+        try:
+            while time.time() < self._waiting_until and not self._cancel_flag:
+                time.sleep(1)
+        finally:
+            self._waiting_until = None
+        return not self._cancel_flag
 
     @contextmanager
     def _job(self):
@@ -342,8 +440,13 @@ class TruyenWikiDownloader:
             load_page(self.driver, full_url)
             # WebDriverWait polls the page until the condition is true or the
             # timeout (seconds) passes; then it raises TimeoutException.
+            # any_of = stop waiting as soon as EITHER the chapter text OR the
+            # access-limit notice is on the page (no 15 s timeout on the limit page).
             wait = WebDriverWait(self.driver, self.page_load_timeout)
-            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "content-body-wrapper")))
+            wait.until(EC.any_of(
+                EC.presence_of_element_located((By.CLASS_NAME, "content-body-wrapper")),
+                EC.text_to_be_present_in_element((By.TAG_NAME, "body"), ACCESS_LIMIT_MARKER),
+            ))
             duration_ms = int((time.time() - t0) * 1000)
         except Exception as e:
             duration_ms = int((time.time() - t0) * 1000)
@@ -358,6 +461,13 @@ class TruyenWikiDownloader:
         # --- Parse + clean the rendered HTML (shared with the Text Cleaning test) ---
         try:
             title_text, body_text = parse_chapter_html(self.driver.page_source, self.cleaner)
+        except AccessLimitError as e:
+            # Own status so Statistics can tell quota hits from real failures.
+            self.db.log_request("chapter", "limited", session_type=self.session_type,
+                                domain=self.domain_host, url=full_url, book_id=self.book_id,
+                                chapter_id=chapter["id"], error=str(e), duration_ms=duration_ms,
+                                detail=self._identities[self._identity_idx]['label'])
+            raise
         except ValueError as e:
             self.db.log_request("chapter", "failed", session_type=self.session_type,
                                 domain=self.domain_host, url=full_url, book_id=self.book_id,
@@ -402,7 +512,10 @@ class TruyenWikiDownloader:
             (success_count, fail_count, cancelled)
 
         A failure on one chapter is recorded (chapter → 'failed') and the loop
-        continues with the next one. The DOCX is exported in `finally`, so
+        continues with the next one. An access-limit page is NOT a failure:
+        the chapter stays as it was, the next identity is used and the SAME
+        chapter is retried; when no identity is left, `_wait_for_limit_reset`
+        either waits and starts over, or sets `_limit_reached` and the loop stops. The DOCX is exported in `finally`, so
         whatever was downloaded is preserved even if the loop crashes.
         """
         self._remaining_count = len(chapters)
@@ -421,19 +534,41 @@ class TruyenWikiDownloader:
                     cancelled = True
                     break
 
-                try:
-                    title, full_url = self.process_chapter(chapter)
-                    self.log_event(self.success_log, f"{log_tag}{full_url}")
-                    self.db.update_chapter_status(chapter_id=chapter['id'], status='completed',
-                                                  file_path=docx_label)
-                    self._success_count += 1
-                    print(f"{Fore.GREEN}Success: {Fore.WHITE}{title} ({index}/{len(chapters)})")
-                except Exception as e:
-                    self.log_event(self.failure_log, f"{log_tag}{chapter['chapter_url']} | Error: {e}")
-                    self.db.update_chapter_status(chapter_id=chapter['id'], status='failed',
-                                                  error_message=str(e))
-                    self._fail_count += 1
-                    print(f"{Fore.RED}Failed: {chapter['chapter_title']} | Error: {e}")
+                # `while True` retries the same chapter: `continue` = try again
+                # with the new identity, `break` = done with this chapter.
+                while True:
+                    try:
+                        title, full_url = self.process_chapter(chapter)
+                        self.log_event(self.success_log, f"{log_tag}{full_url}")
+                        self.db.update_chapter_status(chapter_id=chapter['id'], status='completed',
+                                                      file_path=docx_label)
+                        self._success_count += 1
+                        print(f"{Fore.GREEN}Success: {Fore.WHITE}{title} ({index}/{len(chapters)})")
+                    except AccessLimitError:
+                        label = self._identities[self._identity_idx]['label']
+                        self.log_event(self.failure_log,
+                                       f"{log_tag}{chapter['chapter_url']} | ACCESS LIMIT ({label})")
+                        print(f"{Fore.YELLOW}Access limit reached for {label}.")
+                        if self._identity_idx + 1 < len(self._identities):
+                            self._use_identity(self._identity_idx + 1)
+                            continue
+                        if self._wait_for_limit_reset():
+                            self._use_identity(0)
+                            continue
+                        # Stop only if the user did not cancel (cancel is handled below).
+                        self._limit_reached = not self._cancel_flag
+                    except Exception as e:
+                        self.log_event(self.failure_log, f"{log_tag}{chapter['chapter_url']} | Error: {e}")
+                        self.db.update_chapter_status(chapter_id=chapter['id'], status='failed',
+                                                      error_message=str(e))
+                        self._fail_count += 1
+                        print(f"{Fore.RED}Failed: {chapter['chapter_title']} | Error: {e}")
+                    break
+
+                if self._limit_reached:
+                    print(f"{Fore.YELLOW}Every access identity is limited — stopping.")
+                    self.log_event(self.success_log, f"{log_tag}ACCESS LIMIT REACHED — stopped")
+                    break
 
                 # Be gentle with the server; no pause after the last chapter.
                 if index < len(chapters):
@@ -442,7 +577,9 @@ class TruyenWikiDownloader:
         finally:
             self._export_docx()
 
-        return self._success_count, self._fail_count, cancelled
+        # `or self._cancel_flag`: a cancel during the limit wait on the LAST
+        # chapter never reaches the check at the top of the loop.
+        return self._success_count, self._fail_count, cancelled or self._cancel_flag
 
     def _count_status(self, status: str) -> int:
         """Count this book's chapters with the given status (fresh from the DB)."""
@@ -506,7 +643,8 @@ class TruyenWikiDownloader:
 
             if cancelled:
                 new_status = 'cancelled'
-            elif limited:
+            elif limited or self._limit_reached:
+                # Unfinished chapters stay 'pending'; Download resumes from them.
                 new_status = 'paused'
             elif fail == 0:
                 new_status = 'completed'

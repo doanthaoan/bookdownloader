@@ -104,6 +104,13 @@ const BookHeader = ({ book, tags, completedChapters, totalChapters, failedCount,
             {progress.success_count} success / {progress.fail_count} failed
             &nbsp;— chapter {progress.current_index} of {progress.total} in this session
           </div>
+          {/* identity / wait_seconds come from download progress only (absent for translations). */}
+          {progress.identity && (
+            <div className="text-indigo-600 mt-1">
+              Access: {progress.identity}
+              {progress.wait_seconds > 0 && ` — all access limits reached, retrying in ${Math.ceil(progress.wait_seconds / 60)} min`}
+            </div>
+          )}
         </div>
       )}
     </>

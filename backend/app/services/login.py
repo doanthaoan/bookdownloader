@@ -14,6 +14,7 @@ Login flow (see AutoLogin.perform_login for details):
 6. Extract cookies from the login domain AND the book domain, and save the
    known ones (COOKIE_KEYS) into the settings table as `cookie_<name>`.
 """
+import json
 import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -36,10 +37,16 @@ class AutoLogin:
         login_url / login_domain / trigger_selector: loaded from DB settings.
     """
 
-    def __init__(self):
-        """Load the DB handle and login settings. No browser is started yet."""
+    def __init__(self, account_id: int = None):
+        """Load the DB handle and login settings. No browser is started yet.
+
+        Args:
+            account_id: id of an extra `site_accounts` row to save the cookies
+                to. None = the primary account (the `cookie_<name>` settings).
+        """
         self.db = get_database()
         self.driver = None
+        self.account_id = account_id
         self._load_config()
 
     def _load_config(self):
@@ -60,8 +67,14 @@ class AutoLogin:
             cookies: dict of cookie name -> value.
 
         Side effects:
-            DB write: one setting `cookie_<name>` per cookie.
+            DB write: for an extra account, its `site_accounts.cookies` JSON;
+            otherwise one setting `cookie_<name>` per cookie.
         """
+        if self.account_id is not None:
+            # json.dumps turns the dict into JSON text for the TEXT column.
+            self.db.set_site_account_cookies(self.account_id, json.dumps(cookies))
+            print(f"Saved {len(cookies)} cookies to extra account id={self.account_id}")
+            return
         for name, value in cookies.items():
             self.db.update_setting(f"cookie_{name}", value)
             print(f"Saved cookie: {name}")
@@ -99,8 +112,10 @@ class AutoLogin:
         try:
             # TODO: account_password is stored in plaintext in the settings
             # table; encrypt it or stop storing it (PLAN.md Phase 3).
-            self.db.update_setting("account_username", username)
-            self.db.update_setting("account_password", password)
+            # Extra accounts already keep their credentials in site_accounts.
+            if self.account_id is None:
+                self.db.update_setting("account_username", username)
+                self.db.update_setting("account_password", password)
 
             homepage = TRUYENWIKI['book_domain']
             print(f"Navigating to homepage: {homepage}")
@@ -282,12 +297,14 @@ class AutoLogin:
                 self.driver = None
 
 
-def auto_login(username: str, password: str) -> dict:
+def auto_login(username: str, password: str, account_id: int = None) -> dict:
     """Convenience function for auto-login.
 
     Args:
         username: account username / email.
         password: account password.
+        account_id: extra `site_accounts` row to save the cookies to;
+            None = primary account (`cookie_<name>` settings).
 
     Returns:
         dict: {"success": bool, "message": str} from AutoLogin.perform_login.
@@ -295,6 +312,6 @@ def auto_login(username: str, password: str) -> dict:
     Side effects:
         See AutoLogin.perform_login (browser, network, DB writes).
     """
-    service = AutoLogin()
+    service = AutoLogin(account_id)
     return service.perform_login(username, password)
 

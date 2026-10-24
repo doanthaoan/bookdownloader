@@ -193,7 +193,7 @@ def make_driver(*, headless: bool = False, custom_ua: bool = True, harden: bool 
     return harden_driver(driver) if harden else driver
 
 
-def inject_site_cookies(driver):
+def inject_site_cookies(driver, cookies: dict = None):
     """Log the browser in to the BOOK site by adding the stored cookies.
 
     Selenium can only set cookies for the domain of the page that is open
@@ -201,13 +201,17 @@ def inject_site_cookies(driver):
 
     Args:
         driver: a live WebDriver (from make_driver()).
+        cookies: {name: value} to add; None = the primary account (get_cookies()).
+            The downloader passes an extra account's cookies when it switches
+            account after hitting the site's access limit.
 
     Side effects: one page load of the home page; cookies added to the session.
     Cookies that Chrome rejects are reported and skipped (never fatal).
     """
     load_page(driver, TRUYENWIKI['book_domain'])
     domain = TRUYENWIKI['cookie_domain']
-    for name, value in get_cookies().items():
+    # `x if x is not None else y`: an empty dict {} is respected (adds nothing).
+    for name, value in (cookies if cookies is not None else get_cookies()).items():
         if value:
             try:
                 driver.add_cookie({'name': name, 'value': value, 'domain': domain})

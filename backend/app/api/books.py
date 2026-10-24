@@ -453,7 +453,8 @@ def get_progress(book_id: int):
     Response, two shapes:
       * job running: ``{"active": True, "download_status": "in_progress",
         "success_count", "fail_count", "total", "current_index",
-        "current_title", "cancelled"}`` from the in-memory job tracker;
+        "current_title", "cancelled", "identity", "wait_seconds"}`` from the
+        in-memory job tracker;
       * idle: ``{"active": False, "download_status", "downloaded_chapters",
         "total_chapters"}`` read from the DB row.
     Errors: 404 only when idle AND the book does not exist.
@@ -478,6 +479,9 @@ def get_progress(book_id: int):
         "current_index": progress["current_index"],
         "current_title": progress["current_title"],
         "cancelled": progress["cancelled"],
+        # Access identity in use and seconds left while waiting for the access limit to reset.
+        "identity": progress["identity"],
+        "wait_seconds": progress["wait_seconds"],
     }
 
 @router.get("/{book_id}/docx")
