@@ -12,6 +12,14 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.7.1] — 2026-10-25
+
+### Fixed
+
+- **Lighter Book Details polling.** While a job runs, each poll now loads only the book, chapters and progress. Tags, corrections and corrected-DOCX info load on open and after edits, not on every tick (`fetchData('poll')` in `BookDetails.jsx`).
+
+---
+
 ## [1.7.0] — 2026-10-25
 
 ### Added

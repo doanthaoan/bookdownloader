@@ -37,31 +37,39 @@ const BookDetails = ({ bookId, onBack }) => {
 
   // Polling + "job running" state. The arrow defers the lookup of fetchData
   // (declared below) until the interval actually fires.
-  const { downloading, applyProgress, trackJob, cancelJob } = useBookProgress(() => fetchData());
+  const { downloading, applyProgress, trackJob, cancelJob } = useBookProgress(() => fetchData('poll'));
 
   /**
-   * Load everything the page shows and feed the job progress to the polling hook.
-   * Side effects: ~7 API calls; sets most state; may start/stop polling.
+   * Load what the page shows and feed the job progress to the polling hook.
+   * @param {'poll'|any} mode - 'poll' = only the data a running job changes
+   *   (book, chapters, progress). Anything else (incl. a click event when used
+   *   as a callback) = full reload, also tags, corrections and DOCX info.
+   * Side effects: 3 (poll) or 6-7 (full) read-only API calls; sets state;
+   *   may start/stop polling.
    * TODO: skip bookApi.getProgress for translated books (fetched but unused there).
    */
-  const fetchData = async () => {
+  const fetchData = async (mode) => {
+    const full = mode !== 'poll';
     try {
       // Optional requests get a .catch with a fallback so one failure
-      // doesn't reject the whole Promise.all.
+      // doesn't reject the whole Promise.all. In poll mode the extra slots
+      // are `null` (Promise.all passes plain values through unchanged).
       const [bookRes, chaptersRes, progressRes, tagsRes, correctionsRes, correctedRes] = await Promise.all([
         bookApi.getOne(bookId),
         bookApi.getChapters(bookId),
         bookApi.getProgress(bookId).catch(() => ({ data: { active: false } })),
-        bookApi.bookTags(bookId).catch(() => ({ data: { tags: [] } })),
-        translateApi.corrections(bookId).catch(() => ({ data: [] })),
-        bookApi.exportCorrectedDocxInfo(bookId).catch(() => ({ data: { exists: false } })),
+        full && bookApi.bookTags(bookId).catch(() => ({ data: { tags: [] } })),
+        full && translateApi.corrections(bookId).catch(() => ({ data: [] })),
+        full && bookApi.exportCorrectedDocxInfo(bookId).catch(() => ({ data: { exists: false } })),
       ]);
       setBook(bookRes.data);
       setChapters(chaptersRes.data);
-      setTags(tagsRes.data.tags);
-      // Safe to overwrite: the modal edits its own copy (see CorrectionsModal).
-      setCorrections(correctionsRes.data || []);
-      setCorrectedDocxExists(correctedRes.data.exists);
+      if (full) {
+        setTags(tagsRes.data.tags);
+        // Safe to overwrite: the modal edits its own copy (see CorrectionsModal).
+        setCorrections(correctionsRes.data || []);
+        setCorrectedDocxExists(correctedRes.data.exists);
+      }
 
       // Translated books report progress from the translate job tracker.
       const p = isTranslated(bookRes.data)
