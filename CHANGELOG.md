@@ -12,6 +12,12 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.7.0] — 2026-10-25
+
+### Added
+
+- **Chapter status filter on Book Details.** A dropdown in the Chapters table header shows only `pending`, `in_progress`, `completed` or `failed` chapters, with a count next to each status. The filter is applied in the browser, so polling updates still show while it is set.
+
 ## [1.6.1] — 2026-10-25
 
 ### Changed
