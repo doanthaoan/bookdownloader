@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { bookApi, translateApi, errMsg } from '../api';
 import { isTranslated } from '../constants';
 import Layout from '../components/Layout';
@@ -39,18 +39,49 @@ const BookDetails = ({ bookId, onBack }) => {
   // (declared below) until the interval actually fires.
   const { downloading, applyProgress, trackJob, cancelJob } = useBookProgress(() => fetchData('poll'));
 
+  // "success/fail" counts seen at the last chapters reload during polling.
+  // A ref (not state) because changing it must not re-render the page.
+  const lastCountsRef = useRef('');
+
   /**
    * Load what the page shows and feed the job progress to the polling hook.
-   * @param {'poll'|any} mode - 'poll' = only the data a running job changes
-   *   (book, chapters, progress). Anything else (incl. a click event when used
-   *   as a callback) = full reload, also tags, corrections and DOCX info.
-   * Side effects: 3 (poll) or 6-7 (full) read-only API calls; sets state;
-   *   may start/stop polling.
+   * @param {'poll'|any} mode - 'poll' = cheap tick: fetch only the job
+   *   progress, and reload book + chapters only when a chapter finished
+   *   (success/fail count changed) or the job ended. Anything else (incl. a
+   *   click event when used as a callback) = full reload, also tags,
+   *   corrections and DOCX info.
+   * Side effects: 1 (quiet poll), 3 (poll after a chapter finished) or 6-7
+   *   (full) read-only API calls; sets state; may start/stop polling.
    * TODO: skip bookApi.getProgress for translated books (fetched but unused there).
    */
   const fetchData = async (mode) => {
     const full = mode !== 'poll';
     try {
+      // `book` is from the latest render (the hook always calls the newest
+      // fetchData), so we know which job tracker to ask.
+      if (!full && book) {
+        const p = (await (isTranslated(book) ? translateApi.progress(bookId) : bookApi.getProgress(bookId))
+          .catch(() => ({ data: { active: false } }))).data;
+        const counts = `${p.success_count}/${p.fail_count}`;
+        if (p.active && counts === lastCountsRef.current) {
+          // Nothing finished since the last reload: just update the progress bar.
+          setProgress(p);
+          applyProgress(p);
+          return;
+        }
+        // A chapter finished (or the job ended): refresh its row status.
+        lastCountsRef.current = counts;
+        const [bookRes, chaptersRes] = await Promise.all([
+          bookApi.getOne(bookId),
+          bookApi.getChapters(bookId),
+        ]);
+        setBook(bookRes.data);
+        setChapters(chaptersRes.data);
+        setProgress(p);
+        applyProgress(p);
+        return;
+      }
+
       // Optional requests get a .catch with a fallback so one failure
       // doesn't reject the whole Promise.all. In poll mode the extra slots
       // are `null` (Promise.all passes plain values through unchanged).

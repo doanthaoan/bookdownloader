@@ -16,7 +16,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
-- **Lighter Book Details polling.** While a job runs, each poll now loads only the book, chapters and progress. Tags, corrections and corrected-DOCX info load on open and after edits, not on every tick (`fetchData('poll')` in `BookDetails.jsx`).
+- **Lighter Book Details polling.** While a job runs, each 2 s poll now asks only for the job progress. Book + chapters reload only when a chapter finishes (success/fail count changes) or the job ends, so row statuses stay current for Preview/Cancel. Tags, corrections and corrected-DOCX info load on open and after edits, not on every tick (`fetchData('poll')` in `BookDetails.jsx`).
 
 ---
 
