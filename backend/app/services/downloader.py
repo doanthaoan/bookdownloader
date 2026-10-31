@@ -27,6 +27,7 @@ The API polls `get_download_progress()` to show live progress in the UI.
 
 import json
 import random
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -156,6 +157,29 @@ def get_download_progress(book_id: int) -> dict | None:
     }
 
 
+def strip_inline_html(text: str) -> str:
+    """Remove HTML tags that the site left as escaped TEXT inside a paragraph.
+
+    Some author notes arrive as `&lt;a ...&gt;&lt;span ...&gt;chương 59&lt;/span&gt;&lt;/a&gt;`
+    inside a <p>, so `p.get_text()` returns literal tags. We keep only their text.
+
+    Args:
+        text: one paragraph's text (already un-escaped by BeautifulSoup).
+
+    Returns:
+        The text without tags; each `<br>` becomes a paragraph break ("\\n\\n").
+        Text with no tag-looking "<" is returned unchanged (fast path, and keeps
+        a literal "a < b" safe).
+    """
+    if not re.search(r'</?[a-zA-Z]', text):
+        return text
+    # `(?i)` = case-insensitive; matches <br>, <br/>, <BR />. The `\s*` on both
+    # sides eats the spaces around it so the new paragraphs have no stray padding.
+    text = re.sub(r'(?i)\s*<br\s*/?>\s*', '\n\n', text)
+    # Parse the text again as HTML: get_text() drops the tags, keeps their content.
+    return BeautifulSoup(text, 'html.parser').get_text()
+
+
 def parse_chapter_html(html: str, cleaner: TextCleaner) -> tuple:
     """Extract and globally clean the title + body of a chapter page.
 
@@ -198,8 +222,9 @@ def parse_chapter_html(html: str, cleaner: TextCleaner) -> tuple:
     title_text = cleaner.clean(title_tag.get_text()).strip() if title_tag else ""
 
     # List comprehension: clean every non-empty <p> inside the content div.
+    # Escaped HTML is stripped BEFORE the global rules, so they see plain text.
     cleaned_paragraphs = [
-        cleaner.clean(p.get_text()).strip()
+        cleaner.clean(strip_inline_html(p.get_text())).strip()
         for p in content_tag.find_all('p')
         if p.get_text().strip()
     ]

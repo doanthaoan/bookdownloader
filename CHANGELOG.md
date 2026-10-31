@@ -12,6 +12,14 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.7.2] — 2026-10-31
+
+### Fixed
+
+- **No more raw HTML in chapter text.** Some author notes come from the site as escaped HTML (`<a …><span …>chương 59</span></a>`, `<br>`) that was saved as literal text. Downloads now keep only the inner text and turn `<br>` into a paragraph break, before the global Text Cleaning rules run (`strip_inline_html()` in `parse_chapter_html`).
+
+---
+
 ## [1.7.1] — 2026-10-25
 
 ### Fixed

@@ -85,6 +85,11 @@ def check_chapter_parser():
     html = """<p class="book-title">Book</p><p class="book-title">Chương 1</p>
               <div class="content-body-wrapper"><p>One</p><p>  </p><p>Two</p></div>"""
     assert parse_chapter_html(html, _NoCleaning()) == ("Chương 1", "One\n\nTwo")
+    # Escaped HTML inside a <p> (author-note links) → tags dropped, <br> = paragraph break.
+    escaped = ("Note! &lt;br&gt; ở &lt;a target=_blank href=' style='color: blue'&gt;『"
+               "&lt;span style='text-decoration: underline'&gt; chương 54 &lt;/span&gt;』&lt;/a&gt; a &lt; b")
+    page = f'<div class="content-body-wrapper"><p>{escaped}</p></div>'
+    assert parse_chapter_html(page, _NoCleaning())[1] == "Note!\n\nở 『 chương 54 』 a < b"
     try:
         parse_chapter_html("<p>no content</p>", _NoCleaning())
         raise AssertionError("expected ValueError for a page without content")
