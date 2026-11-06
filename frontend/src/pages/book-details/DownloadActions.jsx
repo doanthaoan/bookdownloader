@@ -8,8 +8,9 @@ const BTN = 'text-white px-5 py-2 rounded text-sm font-medium transition';
 
 /**
  * Action panel for downloaded (scraped) books: Download, Re-download
- * (failed / range / all), Update & Download, Refresh Info, Continue Extract,
- * plus the shared DOCX links. While a job runs, shows only Cancel.
+ * (failed / range / all), Import from DOCX (chapter selection), Update &
+ * Download, Refresh Info, Continue Extract, plus the shared DOCX links.
+ * While a job (download or import) runs, shows only Cancel.
  *
  * Each handler calls the API itself, then tells the parent what happened:
  * `onJobStarted` (parent starts polling), `onJobCancelled`, or `onRefresh`.
@@ -31,6 +32,8 @@ const DownloadActions = ({ book, downloading, isCompleted, failedCount, totalCha
   const [maxChapters, setMaxChapters] = useState('');
   const [redownloadFrom, setRedownloadFrom] = useState('');
   const [redownloadTo, setRedownloadTo] = useState('');
+  // Chapter selection for Import, e.g. "1,3,4-20" ('' = all chapters without content).
+  const [importChapters, setImportChapters] = useState('');
 
   /**
    * Parse the "Max" box into API params ({} when empty = no limit).
@@ -127,6 +130,22 @@ const DownloadActions = ({ book, downloading, isCompleted, failedCount, totalCha
     }
   };
 
+  /**
+   * Start a background import of chapters without content from the book's
+   * largest DOCX (API call: importDocx), then poll like a download.
+   * Chapters that already have content are never overwritten.
+   */
+  const handleImportDocx = async () => {
+    const sel = importChapters.trim();
+    if (!confirm(`Import ${sel ? `chapters ${sel}` : 'every chapter without content'} from this book's largest DOCX?`)) return;
+    try {
+      await bookApi.importDocx(bookId, sel);
+      onJobStarted();
+    } catch (err) {
+      alert('Import failed: ' + errMsg(err));
+    }
+  };
+
   if (downloading) {
     return (
       <div className="flex flex-wrap gap-2 items-center">
@@ -193,6 +212,24 @@ const DownloadActions = ({ book, downloading, isCompleted, failedCount, totalCha
           )}
           className={`bg-purple-600 hover:bg-purple-700 ${BTN}`}>
           Re-download All
+        </button>
+      </div>
+
+      {/* Import */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider w-30 flex-shrink-0">Import</span>
+        <div className="flex items-center gap-1 mr-1">
+          <label className="text-xs text-gray-500 whitespace-nowrap">Chapters:</label>
+          <input type="text" value={importChapters}
+            onChange={e => setImportChapters(e.target.value)}
+            placeholder="all, or 1,3,4-20"
+            title="Chapter numbers (#) to import; blank = every chapter without content"
+            className="w-36 border rounded px-2 py-1.5 text-sm" />
+        </div>
+        <button onClick={handleImportDocx} disabled={totalChapters === 0}
+          className={`bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 ${BTN}`}
+          title="Fill chapters that have no stored content from this book's largest DOCX file">
+          Import from DOCX
         </button>
       </div>
 

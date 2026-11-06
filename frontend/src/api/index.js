@@ -49,6 +49,10 @@ export const bookApi = {
   exportCorrected: (id, chapterIds = []) => api.post(`/books/${id}/export-corrected`, chapterIds),
   exportCorrectedDocxInfo: (id) => api.get(`/books/${id}/export-corrected-docx-info`),
   exportCorrectedDocxUrl: (id) => `${API_ORIGIN}/api/books/${id}/export-corrected-docx`,
+  // Background job: fill chapters without content from the book's largest DOCX.
+  // chapters = selection like "1,3,4-20" ('' = every empty chapter). Cancel with cancelDownload.
+  importDocx: (id, chapters = '') => api.post(`/books/${id}/import-docx`, null, { params: { chapters } }),
+  importDocxAll: () => api.post('/books/import-docx'),
   previewCorrection: (id, chapterId) => api.post(`/books/${id}/preview-correction`, null, { params: { chapter_id: chapterId } }),
   toggleFavorite: (id) => api.post(`/books/${id}/toggle-favorite`),
   toggleSent: (id) => api.post(`/books/${id}/toggle-sent`),

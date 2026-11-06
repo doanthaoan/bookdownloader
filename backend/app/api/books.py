@@ -35,12 +35,14 @@ import shutil
 from app.database import get_database
 from app.services.extractor import ChapterListExtractor, extract_chapters_for_book
 from app.services.downloader import (download_book, cancel_download, get_download_progress,
-                                     is_download_active, redownload_book, download_single_chapter)
+                                     is_download_active, redownload_book, download_single_chapter,
+                                     register_download)
 from app.services.translator import get_translation_progress
 from app.services.docx_exporter import (build_book_docx, build_render_rules,
                                         apply_rules, apply_paragraphs,
                                         collapse_blank_lines,
                                         diff_rules, diff_paragraphs, chapter_text)
+from app.services.docx_importer import ImportJob, parse_orders, run_import_job, run_import_all
 from app.config import book_dir
 
 router = APIRouter()
@@ -248,6 +250,18 @@ def list_all_tags():
     Response: list of ``{"name", "count", ...}`` from ``db.get_all_tags()``.
     """
     return db.get_all_tags()
+
+@router.post("/import-docx")
+def import_docx_all(background_tasks: BackgroundTasks):
+    """POST /api/books/import-docx -- in the background, fill the chapters
+    without content of EVERY downloaded book from its largest DOCX
+    (see services/docx_importer.run_import_all). Books are imported one at a
+    time; each shows progress/Cancel on its Book Details page.
+
+    Response: ``{"message": str}`` right away.
+    """
+    background_tasks.add_task(run_import_all)
+    return {"message": "DOCX import started for all books. Open a book to watch its progress."}
 
 @router.get("/{book_id}")
 def get_book(book_id: int):
@@ -489,6 +503,33 @@ def export_corrected(book_id: int, chapter_ids: List[int] = Body(default=[])):
     # `{**a, "k": v}` builds a new dict: all keys of `a` plus one extra key.
     return {**docx_info(book, "_corrected"),
             "chapter_count": len(chapter_ids) if chapter_ids else len(chapters)}
+
+@router.post("/{book_id}/import-docx")
+def import_docx_book(book_id: int, background_tasks: BackgroundTasks, chapters: str = ""):
+    """POST /api/books/{book_id}/import-docx?chapters=1,3,4-20 -- in the
+    background, fill this book's chapters that have no stored content from its
+    largest DOCX. ``chapters`` selects chapter orders (blank = all empty ones).
+
+    The job is registered in the download registry HERE (request thread), so
+    /progress and /cancel-download work for it right away.
+    Response: ``{"message": str}``.
+    Errors: 404 no book, 400 bad chapter selection / translated book,
+    409 a download/import/translation is running.
+    Side effect (background): writes chapter content + status, book counts.
+    """
+    book = get_book_or_404(book_id)
+    if book.get("is_translated"):
+        raise HTTPException(status_code=400, detail="Translated books get their content from the translator.")
+    try:
+        orders = parse_orders(chapters)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Bad chapter selection: {e}")
+    _ensure_idle(book_id)
+    job = ImportJob()
+    if not register_download(book_id, job):
+        raise HTTPException(status_code=409, detail="A job is already running for this book.")
+    background_tasks.add_task(run_import_job, book_id, job, orders)
+    return {"message": "DOCX import started."}
 
 @router.get("/{book_id}/export-corrected-docx")
 def get_export_corrected_docx(book_id: int):

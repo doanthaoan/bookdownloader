@@ -12,6 +12,18 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.8.0] — 2026-10-31
+
+### Added
+
+- **Import chapter content from DOCX files.** Fills chapters that have no stored text (books downloaded before content went to the DB, or a book obtained elsewhere with the same chapter titles) from the book's largest `{id}_*.docx`, so they can be exported with corrections. Works for any chapter status; imported chapters become `completed` and existing content is never overwritten. Chapters are matched to `Heading 1` titles (case/punctuation ignored), falling back to position when the DOCX has exactly one heading per chapter.
+  - Book Details → **Import** row with a chapter selection (`1,3,4-20`, blank = all empty chapters). Runs in the background with the usual progress bar and **Cancel**.
+  - Chapter list: **no content** mark and a per-chapter **Import** button.
+  - Book List: **Import from DOCX (all)**, one book at a time in the background.
+  - New `services/docx_importer.py` (reuses the download job registry), `POST /api/books/{id}/import-docx?chapters=` and `POST /api/books/import-docx`.
+
+---
+
 ## [1.7.2] — 2026-10-31
 
 ### Fixed

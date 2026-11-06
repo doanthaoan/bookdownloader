@@ -3,7 +3,9 @@ import { chapterStatusColors } from '../../constants';
 
 /**
  * Chapter list with per-chapter actions: Preview / Export (completed
- * chapters) and Retry / Redownload (downloaded books only).
+ * chapters), Retry / Redownload and Import (downloaded books only).
+ * Downloaded chapters with no stored content get a "no content" mark and an
+ * Import button (fills them from the book's DOCX).
  * Presentational: the parent performs the API calls. The only local state is
  * the status filter (UI-only, so it does not need to live in the parent).
  *
@@ -13,8 +15,9 @@ import { chapterStatusColors } from '../../constants';
  * @param {(chapterId: number) => void} props.onPreview
  * @param {(chapterId: number) => void} props.onExport
  * @param {(chapterId: number) => void} props.onDownload
+ * @param {(chapterOrder: number) => void} props.onImport - import one chapter from DOCX
  */
-const ChapterTable = ({ chapters, translated, onPreview, onExport, onDownload }) => {
+const ChapterTable = ({ chapters, translated, onPreview, onExport, onDownload, onImport }) => {
   // '' = show all statuses; otherwise one key of chapterStatusColors.
   const [statusFilter, setStatusFilter] = useState('');
   // Filtering is derived on every render (cheap array filter), so polling
@@ -57,7 +60,10 @@ const ChapterTable = ({ chapters, translated, onPreview, onExport, onDownload })
             {chapters.length === 0 ? 'No chapters extracted yet.' : 'No chapters with this status.'}
           </td></tr>
         )}
-        {shown.map(ch => (
+        {shown.map(ch => {
+          // Downloaded book row whose text is not in the DB (can't be previewed/exported).
+          const noContent = !translated && !ch.chapter_content;
+          return (
           <tr key={ch.id} className="hover:bg-gray-50 transition">
             <td className="px-6 py-3 text-sm text-gray-500">{ch.chapter_order}</td>
             <td className="px-6 py-3 text-sm text-gray-900">{ch.chapter_title}</td>
@@ -65,6 +71,11 @@ const ChapterTable = ({ chapters, translated, onPreview, onExport, onDownload })
               <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${chapterStatusColors[ch.download_status] || 'bg-gray-100 text-gray-700'}`}>
                 {ch.download_status}
               </span>
+              {noContent && (
+                <span className="block mt-1 text-xs text-red-600" title="No chapter text stored in the database">
+                  no content
+                </span>
+              )}
             </td>
             <td className="px-6 py-3">
               {ch.download_status === 'completed' && (
@@ -92,9 +103,17 @@ const ChapterTable = ({ chapters, translated, onPreview, onExport, onDownload })
                   Redownload
                 </button>
               )}
+              {noContent && (
+                <button onClick={() => onImport(ch.chapter_order)}
+                  className="text-xs bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded transition ml-1"
+                  title="Import this chapter's text from the book's largest DOCX">
+                  Import
+                </button>
+              )}
             </td>
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </table>
   </div>

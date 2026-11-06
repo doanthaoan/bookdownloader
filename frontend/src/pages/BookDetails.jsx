@@ -187,6 +187,19 @@ const BookDetails = ({ bookId, onBack }) => {
     }
   };
 
+  /**
+   * Import one chapter's text from the book's DOCX (API call: importDocx), then poll.
+   * @param {number} chapterOrder - the chapter's # (chapter_order)
+   */
+  const handleChapterImport = async (chapterOrder) => {
+    try {
+      await bookApi.importDocx(bookId, String(chapterOrder));
+      trackJob();
+    } catch (err) {
+      alert('Import failed: ' + errMsg(err));
+    }
+  };
+
   if (loading) return <div className="text-center py-10 text-gray-500">Loading book details...</div>;
   if (!book) return <div className="text-center py-10 text-red-500">Book not found</div>;
 
@@ -288,6 +301,7 @@ const BookDetails = ({ bookId, onBack }) => {
         onPreview={handlePreview}
         onExport={handleExportChapter}
         onDownload={handleChapterDownload}
+        onImport={handleChapterImport}
       />
     </Layout>
   );

@@ -149,6 +149,20 @@ const BookList = ({ onViewBook }) => {
     }
   };
 
+  /**
+   * Start a background import of every downloaded book's chapters without
+   * content from its largest DOCX (API call: importDocxAll). Books run one at
+   * a time; each one's progress/Cancel shows on its Book Details page.
+   */
+  const handleImportDocxAll = async () => {
+    if (!confirm('Import chapters without content for ALL books from their largest DOCX files?')) return;
+    try {
+      alert((await bookApi.importDocxAll()).data.message);
+    } catch (err) {
+      alert('Import failed: ' + errMsg(err));
+    }
+  };
+
   return (
     <Layout title="Book List" subtitle={`${total} book${total !== 1 ? 's' : ''} in your library`}>
       <div className="bg-white rounded-lg shadow p-4 mb-4">
@@ -222,6 +236,11 @@ const BookList = ({ onViewBook }) => {
           </div>
           <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm">
             Search
+          </button>
+          <button type="button" onClick={handleImportDocxAll}
+            className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded text-sm"
+            title="Fill chapters that have no stored content from each book's largest DOCX file">
+            Import from DOCX (all)
           </button>
         </form>
       </div>

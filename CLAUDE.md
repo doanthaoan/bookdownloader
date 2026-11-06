@@ -25,6 +25,7 @@ Backend (`backend/app/`):
 | `services/downloader.py` | `parse_chapter_html()`, `TruyenWikiDownloader` (`run` / `run_redownload` / `run_single` → `_job()` + `_process_batch()`), `_active_downloads` registry + progress |
 | `services/translator.py` | `parse_raw_file`, `Translator` (api via curl_cffi → web Selenium fallback, Cloudflare cookie refresh), `translate_book` / `retranslate_book` (→ `_start_job` + `_run_book_job` + `_final_status`) / `continue_book`, `_active_translations` |
 | `services/docx_exporter.py` | `build_render_rules`, `apply_rules/apply_paragraphs`, `diff_rules` (preview), `collapse_blank_lines`, `build_book_docx` |
+| `services/docx_importer.py` | `import_book` — fill chapters without content from the book's largest DOCX (title match, positional fallback); `ImportJob` runs in the download registry (progress/cancel); `parse_orders("1,3,4-20")` |
 | `services/text_cleaner.py` | `TextCleaner.clean()` — global rules at download-save time |
 | `services/login.py` | `auto_login` (headless Selenium → cookies to settings) |
 | `api/books.py` | `get_book_or_404`, `docx_path/docx_info/docx_response` helpers; books CRUD, extract, download/redownload/single, progress, export-corrected (the ONLY DOCX writer — no auto-export) + its file endpoints, preview, cover, refresh-info, updates/check, update-full, continue-extract |
