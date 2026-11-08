@@ -92,38 +92,49 @@ def chapter_text(ch, is_translated: bool) -> tuple:
 
 # Captures the chapter NUMBER of a heading like "Chương 12 ..." (group 1).
 # re.IGNORECASE also matches "chương" / "CHƯƠNG".
-CHUONG_NO_RE = re.compile(r"^\s*Chương\s*(\d+)", re.IGNORECASE)
+# Optional "12. " prefix covers titles like "1. Chương 1".
+CHUONG_NO_RE = re.compile(r"^\s*(?:\d+\.\s*)?Chương\s*(\d+)", re.IGNORECASE)
 
 
 def drop_repeated_title(title: str, body: str) -> str:
-    """Remove the first paragraph of a downloaded chapter body if it repeats
-    the chapter title. Many source pages print the heading again as the first
-    <p>, so the DOCX showed the title twice. This is the downloaded-book version
-    of the same check in translator.parse_raw_file.
+    """Remove leading paragraphs of a downloaded chapter body that repeat the
+    chapter title. Many source pages print the heading again once or twice as
+    the first <p>s, so the DOCX showed the title several times. This is the
+    downloaded-book version of the same check in translator.parse_raw_file.
 
-    Done at RENDER time (not at save time), so already-downloaded books are
-    fixed too and the DB text stays untouched.
+    Used at download-save time (downloader.parse_chapter_html) AND at render
+    time, so books stored before the save-time check are fixed in the DOCX too.
 
     Args:
         title: the chapter title, e.g. "Chương 3 vô sỉ tiểu sw sửa sang lại đăng?".
         body: stored content, paragraphs joined by "\\n\\n".
 
     Returns:
-        str: the body without the repeated heading (or unchanged).
+        str: the body without the repeated heading(s) (or unchanged).
 
     How the match works:
-        The repeat often differs a little (e.g. "s*w* chỉnh * lý" in the body
-        vs "sw sửa sang lại" in the title), so the texts are not compared
-        exactly. Instead, both must start with the same "Chương N" number, AND
-        the paragraph must be no more than twice as long as the title, so a real
-        story paragraph that happens to start with "Chương N" is kept.
+        The repeat often differs a little ("Chương 1 chương 1" under the title
+        "Chương 1", or "s*w* chỉnh * lý" vs "sw sửa sang lại"), so the texts are
+        not compared exactly. A paragraph is dropped when it equals the title,
+        OR both start with the same "Chương N" number and the paragraph is short
+        (<= max(2 x title length, 100) chars) so a real story paragraph that
+        happens to start with "Chương N" is kept. Only the first 3 paragraphs
+        are checked: a heading in the middle of the text is real content.
     """
-    # partition("\n\n") -> (first paragraph, separator, the rest).
-    first, _, rest = body.partition("\n\n")
-    # Walrus `:=` assigns AND tests in one expression.
-    if ((m_title := CHUONG_NO_RE.match(title)) and (m_first := CHUONG_NO_RE.match(first))
-            and m_title.group(1) == m_first.group(1) and len(first) <= 2 * len(title)):
-        return rest.lstrip("\n")
+    m_title = CHUONG_NO_RE.match(title or "")
+    for _ in range(3):
+        # partition("\n\n") -> (first paragraph, separator, the rest).
+        first, _, rest = body.partition("\n\n")
+        first = first.strip()
+        if not first:
+            break
+        # Walrus `:=` assigns AND tests in one expression.
+        same_no = (m_title and (m_first := CHUONG_NO_RE.match(first))
+                   and m_title.group(1) == m_first.group(1)
+                   and len(first) <= max(2 * len(title), 100))
+        if not (same_no or first == (title or "").strip()):
+            break
+        body = rest.lstrip("\n")
     return body
 
 

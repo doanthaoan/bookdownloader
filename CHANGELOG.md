@@ -12,6 +12,13 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.9.1] — 2026-11-08
+
+### Fixed
+
+- **Chapter title no longer repeated in downloaded content.** Leading paragraphs that repeat the chapter title (e.g. `Chương 1 chương 1` twice under `Chương 1`) are now stripped when a chapter is downloaded, not only at DOCX render. Up to 3 leading lines are checked (same `Chương N` number and short, or exactly the title); a heading in the middle of the text is kept. Existing downloaded chapters were cleaned once (3162 chapters).
+  - `docx_exporter.drop_repeated_title()` now loops, accepts `1. Chương N` titles and a looser length guard; used by `downloader.parse_chapter_html()`.
+
 ## [1.9.0] — 2026-11-08
 
 ### Changed

@@ -176,6 +176,16 @@ def check_drop_repeated_title():
     assert drop_repeated_title(title, "A\n\nB") == "A\n\nB"
     long_para = "Chương 3 " + "x" * 200
     assert drop_repeated_title(title, long_para) == long_para
+    # Heading repeated twice, longer than 2x a short title (book 62 case) -> both dropped.
+    assert drop_repeated_title("Chương 1", "Chương 1 chương 1\n\nChương 1 chương 1\n\nA") == "A"
+    # Exact title without a number -> dropped; same heading mid-text -> kept.
+    assert drop_repeated_title("Phần 2", "Phần 2\n\nA\n\nPhần 2") == "A\n\nPhần 2"
+    # "Phần N" page holding a real "Chương 7" sub-heading -> kept.
+    assert drop_repeated_title("Phần 5", "Chương 7 x\n\nA") == "Chương 7 x\n\nA"
+    # Download path strips it too.
+    page = ('<p class="book-title">B</p><p class="book-title">Chương 4</p><div class="content-body-wrapper">'
+            '<p>Chương 4 chương 4</p><p>Text</p></div>')
+    assert parse_chapter_html(page, _NoCleaning()) == ("Chương 4", "Text")
 
 
 def check_fast_docx_matches_python_docx():

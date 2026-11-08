@@ -43,7 +43,7 @@ from app.config import (COOKIE_KEYS, STATIC_COOKIES, TRUYENWIKI, get_cookies,
                         logs_dir)
 from app.database import get_database
 from app.services.browser import inject_site_cookies, load_page, make_driver
-from app.services.docx_exporter import collapse_blank_lines
+from app.services.docx_exporter import collapse_blank_lines, drop_repeated_title
 from app.services.text_cleaner import TextCleaner
 
 # colorama: makes the Fore.* colour codes work in the Windows console.
@@ -228,12 +228,13 @@ def parse_chapter_html(html: str, cleaner: TextCleaner) -> tuple:
         for p in content_tag.find_all('p')
         if p.get_text().strip()
     ]
-    if not cleaned_paragraphs:
+    # Collapse blank-line runs so stored content never has several empty lines,
+    # then drop the chapter title the page often repeats as the first paragraph(s).
+    body_text = drop_repeated_title(title_text, collapse_blank_lines("\n\n".join(cleaned_paragraphs)))
+    if not body_text.strip():
         # Saving "" would mark the chapter completed with no text; fail it instead
         # so it shows up for Re-download (the message becomes its error note).
         raise ValueError("Empty content: the chapter page has no text paragraphs.")
-    # Collapse blank-line runs so stored content never has several empty lines.
-    body_text = collapse_blank_lines("\n\n".join(cleaned_paragraphs))
     return title_text, body_text
 
 
