@@ -37,7 +37,8 @@ export const errMsg = (err) => err?.response?.data?.detail || err?.message || St
 export const bookApi = {
   getAll: (params) => api.get('/books', { params }),
   getOne: (id) => api.get(`/books/${id}`),
-  extract: (title, url) => api.post('/books/extract', null, { params: { book_title: title, book_url: url } }),
+  // The title is scraped from the book page by the backend; only the URL is sent.
+  extract: (url) => api.post('/books/extract', null, { params: { book_url: url } }),
   getChapters: (id) => api.get(`/books/${id}/chapters`),
   download: (id, params = {}) => api.post(`/books/${id}/download`, null, { params }),
   cancelDownload: (id) => api.post(`/books/${id}/cancel-download`),

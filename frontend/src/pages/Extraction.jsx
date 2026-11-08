@@ -3,11 +3,11 @@ import { bookApi, errMsg } from '../api';
 import Layout from '../components/Layout';
 
 /**
- * Extract page: submit a book title + URL so the backend scrapes its
+ * Extract page: submit a book URL so the backend scrapes its title, info and
  * chapter list (the download itself is started later from BookDetails).
  */
 const Extraction = () => {
-  const [form, setForm] = React.useState({ title: '', url: '' });
+  const [url, setUrl] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   // Result banner; `isError` decides the color instead of sniffing the text.
   const [message, setMessage] = React.useState('');
@@ -22,7 +22,7 @@ const Extraction = () => {
     setLoading(true);
     setMessage('');
     try {
-      const res = await bookApi.extract(form.title, form.url);
+      const res = await bookApi.extract(url);
       setIsError(false);
       setMessage(res.data.message);
     } catch (err) {
@@ -38,24 +38,13 @@ const Extraction = () => {
       <div className="max-w-2xl bg-white rounded-lg shadow p-6">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Book Title</label>
-            {/* Controlled input: value comes from state, onChange copies the form object with one field replaced. */}
-            <input
-              type="text"
-              className="w-full p-2.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-              value={form.title}
-              onChange={(e) => setForm({...form, title: e.target.value})}
-              placeholder="Enter book title..."
-              required
-            />
-          </div>
-          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Book URL</label>
+            {/* Controlled input: value comes from state. The title is read from the page by the backend. */}
             <input
               type="url"
               className="w-full p-2.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-              value={form.url}
-              onChange={(e) => setForm({...form, url: e.target.value})}
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
               placeholder="https://wikicv.org/..."
               required
             />

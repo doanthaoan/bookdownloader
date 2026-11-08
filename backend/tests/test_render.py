@@ -204,6 +204,33 @@ def check_fast_docx_matches_python_docx():
     assert "Qux bar" in text and "Qux baz" in text and "Foo" not in text
 
 
+def check_split_book_name():
+    """Book heading -> (name before the first "/", other name or None)."""
+    from app.services.extractor import split_book_name
+    assert split_book_name("Tên A") == ("Tên A", None)
+    assert split_book_name("Xuyên nhanh: A! / Xuyên nhanh: B") == ("Xuyên nhanh: A!", "Xuyên nhanh: B")
+    assert split_book_name("A / B / C") == ("A", "B / C")
+    assert split_book_name("A /") == ("A", None)
+
+
+def check_same_title_books():
+    """Two books with the same title get distinct slugs and are found by URL.
+
+    Uses a throwaway DB file in a temp folder, never the live DB.
+    """
+    from app.database import NovelDatabase
+    with tempfile.TemporaryDirectory() as tmp:
+        db = NovelDatabase(str(Path(tmp) / "t.db"))
+        a = db.add_book(title="Tên A", book_url="https://x/truyen/a")
+        b = db.add_book(title="Tên A", book_url="https://x/truyen/b")
+        c = db.add_book(title="Ten A!", book_url="https://x/truyen/c")  # same slug, other accents
+        slugs = [db.get_book(i)["seo_title_basic"] for i in (a, b, c)]
+        assert len(set(slugs)) == 3, slugs
+        assert db.get_book_by_url("https://x/truyen/b/")["id"] == b  # trailing "/" ignored
+        assert db.get_book_by_url("https://x/truyen/z") is None
+        db._get_connection().close()  # release the file so Windows can delete the temp dir
+
+
 if __name__ == "__main__":
     # Run every function whose name starts with "check_" (in definition order).
     checks = [f for name, f in list(globals().items()) if name.startswith("check_")]

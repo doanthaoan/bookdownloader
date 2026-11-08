@@ -377,10 +377,21 @@ class NovelDatabase:
         # circular import between app.utils and app.database.
         from app.utils import clean_title
         
-        seo_basic = clean_title(title)
-        seo_full = f"{seo_basic}.html"
-        
         conn = self._get_connection()
+
+        # seo_title_full is UNIQUE in the schema, but two books can have the same
+        # title (or titles that differ only by accents/punctuation, which give the
+        # same slug). Append "-2", "-3", ... until the slug is free, instead of
+        # failing with IntegrityError. Safe for files: they are named
+        # {id}_{seo_title_basic}, so the id already keeps them apart.
+        base = clean_title(title)
+        seo_basic, n = base, 1
+        while conn.execute("SELECT 1 FROM books WHERE seo_title_full = ?",
+                           (f"{seo_basic}.html",)).fetchone():
+            n += 1
+            seo_basic = f"{base}-{n}"
+        seo_full = f"{seo_basic}.html"
+
         cursor = conn.execute("""
             INSERT INTO books (stt, title, seo_title_basic, seo_title_full, 
                              book_url, notes, author, book_web_status,
@@ -471,6 +482,23 @@ class NovelDatabase:
         conn = self._get_connection()
         cursor = conn.execute("SELECT * FROM books WHERE title = ?", (title,))
         row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_book_by_url(self, book_url: str) -> Optional[Dict]:
+        """Get the book whose page URL is `book_url` (a trailing "/" is ignored).
+
+        Used by extraction to find an already-added book. Unlike the title,
+        the URL identifies one book on the site, so two books with the same
+        name are never mixed up.
+
+        Returns:
+            Book dict or None.
+        """
+        conn = self._get_connection()
+        # rtrim(x, '/') in SQL and rstrip('/') in Python strip trailing slashes
+        # on both sides, so ".../abc" and ".../abc/" match.
+        row = conn.execute("SELECT * FROM books WHERE rtrim(book_url, '/') = ?",
+                           (book_url.rstrip('/'),)).fetchone()
         return dict(row) if row else None
     
     def update_book_status(self, book_id: int, download_status: str = None, 

@@ -277,12 +277,14 @@ def get_book(book_id: int):
     return book
 
 @router.post("/extract")
-def extract_book(book_title: str, book_url: str, background_tasks: BackgroundTasks):
+def extract_book(book_url: str, background_tasks: BackgroundTasks):
     """
     Start extraction process for a book.
     Runs in background to avoid HTTP timeout.
 
-    POST /api/books/extract?book_title=..&book_url=..
+    POST /api/books/extract?book_url=..
+    The book title is NOT sent: it is read from the book page's heading
+    (extractor.split_book_name), so a typo can't create a wrong title.
 
     ``background_tasks: BackgroundTasks`` is not a query param: FastAPI sees the
     type and injects a task queue that runs after the response is sent.
@@ -292,16 +294,11 @@ def extract_book(book_title: str, book_url: str, background_tasks: BackgroundTas
     Side effects (in background): OPENS CHROME, scrapes book info + the full
     chapter list, creates or updates the book and appends new chapter rows.
     """
-    # TODO: an existing book is matched by TITLE (inside extract_chapters_for_book),
-    # so two different books with the same title get merged, and a renamed book
-    # is extracted again as a new one. Matching by book_url would be safer.
-    # Nested function (closure) capturing book_url/book_title; a lambda or
-    # add_task(extract_chapters_for_book, book_url, book_title) would also work.
-    def run_extraction():
-        extract_chapters_for_book(book_url, book_title)
-
-    background_tasks.add_task(run_extraction)
-    return {"message": f"Extraction started for {book_title}. Please check back in a moment."}
+    # An existing book is matched by its URL (db.get_book_by_url), so two
+    # different books with the same title stay separate.
+    # add_task(func, *args) calls func(*args) after the response is sent.
+    background_tasks.add_task(extract_chapters_for_book, book_url)
+    return {"message": f"Extraction started for {book_url}. Please check back in a moment."}
 
 @router.get("/{book_id}/chapters")
 def get_chapters(book_id: int):

@@ -93,6 +93,21 @@ def normalize_url(url: str) -> str:
     return url
 
 
+def split_book_name(heading: str) -> tuple[str, str | None]:
+    """Split the book heading shown on the site into (name, other name).
+
+    When the author renames a book the site shows both names separated by "/":
+    "Tên A / Tên B" -> ("Tên A", "Tên B"). Without "/" the whole text is the name:
+    "Tên A" -> ("Tên A", None).
+
+    `split('/', 1)` splits at the FIRST "/" only, so any further "/" stays in the
+    other name. `partition` would work too; split keeps the "no slash" case simple.
+    """
+    parts = [p.strip() for p in heading.split('/', 1)]
+    # `parts[1] or None`: an empty other name ("Tên A /") counts as no other name.
+    return parts[0], (parts[1] or None) if len(parts) > 1 else None
+
+
 def append_new_chapters(book_id: int, extracted: list) -> int:
     """Add extracted chapters that are not in the DB yet. Never deletes anything.
 
@@ -211,6 +226,21 @@ class ChapterListExtractor:
             if not cover:
                 print("⚠️ Could not find cover-info section")
                 return info
+
+            # --- Book name (the <h2> of .book-info .cover-info) ---
+            # 'book_name' is NOT in db.update_book_info's allowed set, so saving
+            # `info` never renames an existing book; only a NEW book uses it as
+            # its title (process_book_chapters).
+            h2 = cover.find('h2')
+            if h2 and h2.get_text(strip=True):
+                name, other = split_book_name(h2.get_text(strip=True))
+                info['book_name'] = name
+                if other:
+                    # The other (old/new) name goes at the top of the summary
+                    # instead of a new DB column. The summary is re-scraped from
+                    # the site every time, so this never gets added twice.
+                    desc = info.get('short_description')
+                    info['short_description'] = f"Tên khác: {other}" + (f"\n\n{desc}" if desc else "")
 
             for p in cover.find_all('p'):
                 text = p.get_text(strip=True)
@@ -443,26 +473,36 @@ class ChapterListExtractor:
         if info.get('cover_image_url'):
             download_cover_image(book_id, seo_title_basic, info['cover_image_url'])
 
-    def process_book_chapters(self, book_url: str, book_title: str) -> bool:
+    def process_book_chapters(self, book_url: str) -> bool:
         """Full extraction for the Extraction page: book info + chapter list → DB.
 
-        If a book with this title already exists, its info is refreshed and only
-        NEW chapters are appended (downloaded content is kept).
+        The book title is read from the page (scrape_book_info -> 'book_name',
+        the part before "/" of the heading), never typed by the user.
+        If a book with this URL already exists, its info is refreshed and only
+        NEW chapters are appended (downloaded content is kept). A different
+        book with the same title becomes a separate book.
 
         Returns:
-            True on success, False if the chapter list could not be extracted
-            (the book row is still saved, so Continue Extract can retry later).
+            True on success, False if the name or chapter list could not be
+            extracted (in the latter case the book row is still saved, so
+            Continue Extract can retry later).
         """
-        print(f"\n📖 Processing book: {book_title}")
-        print(f"🔗 URL: {book_url}")
+        print(f"\n🔗 Processing book URL: {book_url}")
 
         try:
-            # 1. Scrape metadata first.
+            # 1. Scrape metadata first (it also gives us the book title).
             book_info = self.scrape_book_info(book_url)
+            book_title = book_info.get('book_name')
+            if not book_title:
+                # Without a name we can't match or create the book: stop here
+                # rather than create a book with a wrong/empty title.
+                raise Exception("Book name not found on the page (.cover-info h2)")
+            print(f"📖 Book name: {book_title}")
 
-            # 2. Get or create the book row.
-            # TODO: match on book_url instead of title — two different books can share a title.
-            book = self.db.get_book_by_title(book_title)
+            # 2. Get or create the book row. Matched by URL, NOT by title: two
+            #    different books can share a name, and matching by title would
+            #    append book B's chapters (and info) onto book A.
+            book = self.db.get_book_by_url(book_url)
             if book:
                 book_id = book['id']
                 print(f"📚 Found existing book in DB: {book_title} (ID: {book_id})")
@@ -510,7 +550,7 @@ class ChapterListExtractor:
         except Exception as e:
             self.db.log_request("book_extract", "failed", session_type=self.session_type,
                                 domain=self.domain_host, url=book_url, error=str(e))
-            print(f"❌ Failed to process book {book_title}: {e}")
+            print(f"❌ Failed to process book {book_url}: {e}")
             return False
 
     def close(self):
@@ -520,13 +560,13 @@ class ChapterListExtractor:
             self.driver = None
 
 
-def extract_chapters_for_book(book_url: str, book_title: str) -> bool:
+def extract_chapters_for_book(book_url: str) -> bool:
     """Run a full extraction with its own Chrome session (always closed afterwards).
 
     `try/finally` guarantees close() runs even when process_book_chapters raises.
     """
     extractor = ChapterListExtractor()
     try:
-        return extractor.process_book_chapters(book_url, book_title)
+        return extractor.process_book_chapters(book_url)
     finally:
         extractor.close()

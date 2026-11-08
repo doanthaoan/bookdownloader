@@ -12,6 +12,19 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.9.0] — 2026-11-08
+
+### Changed
+
+- **Extract Book takes only the URL.** The book title is read from the page heading (`.cover-info h2`). When the site shows two names (`Name A / Name B`), the part before the first `/` is the title and the other name is put at the top of the summary as `Tên khác: Name B` (no DB change). Refresh Info / Continue Extract / Update & Download also add that line, but never rename an existing book.
+  - `POST /api/books/extract?book_url=` (no `book_title`); new `extractor.split_book_name()` + self-check.
+
+### Fixed
+
+- **Books with the same name.** Extraction now finds an existing book by its **URL** (new `db.get_book_by_url`) instead of its title, so a different book with the same name is no longer merged into the first one (its chapters appended and its info overwritten). `add_book` adds `-2`, `-3`, … to the slug when it is taken, instead of failing on the `seo_title_full` UNIQUE constraint (same title, or titles that differ only by accents/punctuation).
+
+---
+
 ## [1.8.0] — 2026-10-31
 
 ### Added
